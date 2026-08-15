@@ -54,6 +54,16 @@ on:
         required: false
         type: string
         default: ''
+      run-security:
+        description: 'Run generic dependency security scanning (cargo-deny licenses/bans/advisories + cargo-audit) - no product-specific crate names involved'
+        required: false
+        type: boolean
+        default: true
+      security-audit-ignore:
+        description: 'Space-separated RUSTSEC advisory IDs to ignore in cargo-audit (e.g. RUSTSEC-2020-0071)'
+        required: false
+        type: string
+        default: ''
       use-self-hosted-macos:
         description: 'Run the macOS job on a self-hosted runner instead of macos-latest'
         required: false
@@ -215,6 +225,61 @@ jobs:
         run: cargo fmt --all -- --check
 
   # ══════════════════════════════════════════════════════════════════
+  # SECURITY — generic dependency scanning (license/ban/advisory checks
+  # via cargo-deny + cargo-audit). No product-specific crate names here
+  # by design - a `cargo deny check` run doesn't need to know what your
+  # crates are called, only what they depend on.
+  # ══════════════════════════════════════════════════════════════════
+  cargo-deny:
+    if: inputs.run-security
+    needs: [windows]
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+        with: { repository: '${{ inputs.checkout-repo }}', ref: '${{ inputs.checkout-ref }}', token: '${{ secrets.CHECKOUT_TOKEN }}' }
+      - name: Clone workspace repos
+        if: inputs.clone-repos != ''
+        run: |
+          TOKEN=${{ secrets.CHECKOUT_TOKEN }}
+          for rd in ${{ inputs.clone-repos }}; do
+            r="${rd%%:*}"; d="${rd##*:}"
+            [ ! -d "$d" ] && git clone --depth 1 "https://x-access-token:${TOKEN}@github.com/${r}.git" "$d" || echo "WARN: failed to clone ${r} into ${d}"
+          done
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked
+      - name: Check licenses
+        run: cargo deny check licenses
+      - name: Check advisories (vulnerabilities)
+        run: cargo deny check advisories
+      - name: Check bans
+        run: cargo deny check bans
+
+  security-audit:
+    if: inputs.run-security
+    needs: [windows]
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+        with: { repository: '${{ inputs.checkout-repo }}', ref: '${{ inputs.checkout-ref }}', token: '${{ secrets.CHECKOUT_TOKEN }}' }
+      - name: Clone workspace repos
+        if: inputs.clone-repos != ''
+        run: |
+          TOKEN=${{ secrets.CHECKOUT_TOKEN }}
+          for rd in ${{ inputs.clone-repos }}; do
+            r="${rd%%:*}"; d="${rd##*:}"
+            [ ! -d "$d" ] && git clone --depth 1 "https://x-access-token:${TOKEN}@github.com/${r}.git" "$d" || echo "WARN: failed to clone ${r} into ${d}"
+          done
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      - name: Dependency audit
+        run: |
+          IGNORE_FLAGS=""
+          for id in ${{ inputs.security-audit-ignore }}; do IGNORE_FLAGS="$IGNORE_FLAGS --ignore $id"; done
+          cargo audit $IGNORE_FLAGS
+
+  # ══════════════════════════════════════════════════════════════════
   # RELEASE — only if build-release is set
   # ══════════════════════════════════════════════════════════════════
   release-linux:
@@ -304,6 +369,8 @@ jobs:
       - windows
       - check-wasm
       - lint
+      - cargo-deny
+      - security-audit
     runs-on: ubuntu-latest
     steps:
       - run: |
@@ -312,11 +379,15 @@ jobs:
           echo "  Windows: ${{ needs.windows.result }}"
           echo "  WASM:    ${{ needs.check-wasm.result }}"
           echo "  Lint:    ${{ needs.lint.result }}"
+          echo "  cargo-deny:     ${{ needs.cargo-deny.result }}"
+          echo "  Security audit: ${{ needs.security-audit.result }}"
 
           [ "${{ needs.macos.result }}" = "failure" ] && echo "MACOS BUILD/TEST FAILED" && exit 1
           [ "${{ needs.windows.result }}" = "failure" ] && echo "WINDOWS BUILD/TEST FAILED" && exit 1
           [ "${{ needs.check-wasm.result }}" = "failure" ] && echo "WASM BUILD FAILED" && exit 1
           [ "${{ needs.lint.result }}" = "failure" ] && echo "WARNING: Lint failed (non-blocking)"
+          [ "${{ needs.cargo-deny.result }}" = "failure" ] && echo "WARNING: cargo-deny failed (non-blocking)"
+          [ "${{ needs.security-audit.result }}" = "failure" ] && echo "WARNING: security audit failed (non-blocking)"
 
           echo ""
           echo "CI PASSED for ${{ inputs.target-name }}"
