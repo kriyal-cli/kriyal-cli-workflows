@@ -1,0 +1,322 @@
+name: Reusable Build Pipeline
+
+# Generic, product-agnostic build/test/lint/release pipeline for Rust
+# workspaces spread across multiple sibling repos. Callers configure
+# everything through inputs/secrets below - this file has no knowledge
+# of any specific product, crate, or organization.
+#
+# Any product-specific gates (security scanning, policy enforcement,
+# custom test suites, etc.) belong in a separate private workflow that
+# your calling workflow chains after this one via `needs:` - keeping
+# this file generic means it changes rarely and stays safe to keep
+# public.
+
+on:
+  workflow_call:
+    inputs:
+      checkout-repo:
+        description: 'owner/repo to check out as the base workspace'
+        required: true
+        type: string
+      checkout-ref:
+        description: 'Ref to check out for checkout-repo (defaults to its default branch)'
+        required: false
+        type: string
+        default: ''
+      clone-repos:
+        description: 'Space-separated "owner/repo:localdir" pairs to shallow-clone into the workspace before building (all cloned with the same checkout-token)'
+        required: false
+        type: string
+        default: ''
+      target-crates:
+        description: 'Space-separated crate names to check/build/test'
+        required: true
+        type: string
+      target-name:
+        description: 'Human-readable name for this build target, used in job summaries and artifact names'
+        required: true
+        type: string
+      run-tests:
+        required: false
+        type: boolean
+        default: true
+      build-release:
+        required: false
+        type: boolean
+        default: false
+      check-wasm:
+        description: 'Check WASM target compilation'
+        required: false
+        type: boolean
+        default: false
+      release-binaries:
+        description: 'Space-separated crate names to build release binaries for (defaults to target-crates)'
+        required: false
+        type: string
+        default: ''
+      use-self-hosted-macos:
+        description: 'Run the macOS job on a self-hosted runner instead of macos-latest'
+        required: false
+        type: boolean
+        default: false
+      concurrency-group:
+        description: 'Concurrency group name - set the same value across callers that share a single-machine runner to serialize their builds'
+        required: false
+        type: string
+        default: ''
+    secrets:
+      CHECKOUT_TOKEN:
+        description: 'Token with read access to checkout-repo and every repo listed in clone-repos'
+        required: true
+
+concurrency:
+  group: ${{ inputs.concurrency-group != '' && inputs.concurrency-group || format('reusable-build-{0}-{1}', github.repository, github.ref) }}
+  cancel-in-progress: false
+
+env:
+  RUST_BACKTRACE: 1
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ══════════════════════════════════════════════════════════════════
+  # PLATFORM PIPELINE — macOS first, Windows gated behind it.
+  #
+  # PR label escape hatch: a PR clearly scoped to one platform doesn't
+  # need the other platform to run at all. Attach the label in the PR's
+  # Labels sidebar - these are read from PR metadata, NOT the PR body
+  # or commit message.
+  #   - label `ci:windows-only` → skip macOS entirely, run Windows only
+  #   - label `ci:macos-only`   → run macOS only, skip Windows
+  #   - label `ci:all`          → force every platform regardless of
+  #     any other ci:*-only label present
+  # (No label, or ci:windows-only + ci:macos-only together, runs the
+  # normal macOS→Windows chain.)
+  # ══════════════════════════════════════════════════════════════════
+
+  macos:
+    name: 'macos (build + test)'
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'ci:windows-only') || contains(github.event.pull_request.labels.*.name, 'ci:all') }}
+    runs-on: ${{ inputs.use-self-hosted-macos && fromJSON('["self-hosted", "macOS"]') || 'macos-latest' }}
+    steps:
+      - uses: actions/checkout@v7
+        with: { repository: '${{ inputs.checkout-repo }}', ref: '${{ inputs.checkout-ref }}', token: '${{ secrets.CHECKOUT_TOKEN }}' }
+      - name: Clone workspace repos
+        if: inputs.clone-repos != ''
+        shell: bash
+        run: |
+          TOKEN=${{ secrets.CHECKOUT_TOKEN }}
+          for rd in ${{ inputs.clone-repos }}; do
+            r="${rd%%:*}"; d="${rd##*:}"
+            [ ! -d "$d" ] && git clone --depth 1 "https://x-access-token:${TOKEN}@github.com/${r}.git" "$d" || echo "WARN: failed to clone ${r} into ${d}"
+          done
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with: { shared-key: platform-macos }
+      - name: Cargo check
+        shell: bash
+        run: |
+          CRATE_FLAGS=""
+          for c in ${{ inputs.target-crates }}; do CRATE_FLAGS="$CRATE_FLAGS -p $c"; done
+          cargo check $CRATE_FLAGS
+      - name: Cargo test
+        if: inputs.run-tests
+        shell: bash
+        run: |
+          CRATE_FLAGS=""
+          for c in ${{ inputs.target-crates }}; do CRATE_FLAGS="$CRATE_FLAGS -p $c"; done
+          cargo test $CRATE_FLAGS --lib
+          cargo test $CRATE_FLAGS --tests
+
+  windows:
+    name: 'windows (build + test)'
+    needs: [macos]
+    if: ${{ always() && needs.macos.result != 'failure' && (!contains(github.event.pull_request.labels.*.name, 'ci:macos-only') || contains(github.event.pull_request.labels.*.name, 'ci:all')) }}
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+        with: { repository: '${{ inputs.checkout-repo }}', ref: '${{ inputs.checkout-ref }}', token: '${{ secrets.CHECKOUT_TOKEN }}' }
+      - name: Clone workspace repos
+        if: inputs.clone-repos != ''
+        shell: bash
+        run: |
+          TOKEN=${{ secrets.CHECKOUT_TOKEN }}
+          for rd in ${{ inputs.clone-repos }}; do
+            r="${rd%%:*}"; d="${rd##*:}"
+            [ ! -d "$d" ] && git clone --depth 1 "https://x-access-token:${TOKEN}@github.com/${r}.git" "$d" || echo "WARN: failed to clone ${r} into ${d}"
+          done
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with: { shared-key: platform-windows }
+      - name: Cargo check
+        shell: bash
+        run: |
+          CRATE_FLAGS=""
+          for c in ${{ inputs.target-crates }}; do CRATE_FLAGS="$CRATE_FLAGS -p $c"; done
+          cargo check $CRATE_FLAGS
+      - name: Cargo test
+        if: inputs.run-tests
+        shell: bash
+        run: |
+          CRATE_FLAGS=""
+          for c in ${{ inputs.target-crates }}; do CRATE_FLAGS="$CRATE_FLAGS -p $c"; done
+          cargo test $CRATE_FLAGS --lib
+          cargo test $CRATE_FLAGS --tests
+
+  check-wasm:
+    if: inputs.check-wasm
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with: { repository: '${{ inputs.checkout-repo }}', ref: '${{ inputs.checkout-ref }}', token: '${{ secrets.CHECKOUT_TOKEN }}' }
+      - name: Clone workspace repos
+        if: inputs.clone-repos != ''
+        run: |
+          TOKEN=${{ secrets.CHECKOUT_TOKEN }}
+          for rd in ${{ inputs.clone-repos }}; do
+            r="${rd%%:*}"; d="${rd##*:}"
+            [ ! -d "$d" ] && git clone --depth 1 "https://x-access-token:${TOKEN}@github.com/${r}.git" "$d" || echo "WARN: failed to clone ${r} into ${d}"
+          done
+      - uses: dtolnay/rust-toolchain@stable
+      - run: rustup target add wasm32-unknown-unknown
+      - run: cargo install wasm-bindgen-cli
+      - uses: Swatinem/rust-cache@v2
+        with: { prefix-key: 'rust-wasm' }
+      - run: for c in ${{ inputs.target-crates }}; do cargo check -p "$c" --target wasm32-unknown-unknown; done
+
+  # ══════════════════════════════════════════════════════════════════
+  # LINT — gated on the full platform chain, consistent with not
+  # spending compute on anything beyond a commit that hasn't proven it
+  # builds+tests yet.
+  # ══════════════════════════════════════════════════════════════════
+  lint:
+    needs: [windows]
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+        with: { repository: '${{ inputs.checkout-repo }}', ref: '${{ inputs.checkout-ref }}', token: '${{ secrets.CHECKOUT_TOKEN }}' }
+      - name: Clone workspace repos
+        if: inputs.clone-repos != ''
+        run: |
+          TOKEN=${{ secrets.CHECKOUT_TOKEN }}
+          for rd in ${{ inputs.clone-repos }}; do
+            r="${rd%%:*}"; d="${rd##*:}"
+            [ ! -d "$d" ] && git clone --depth 1 "https://x-access-token:${TOKEN}@github.com/${r}.git" "$d" || echo "WARN: failed to clone ${r} into ${d}"
+          done
+      - uses: dtolnay/rust-toolchain@stable
+        with: { components: 'rustfmt, clippy' }
+      - uses: Swatinem/rust-cache@v2
+      - name: Clippy
+        run: |
+          CRATE_FLAGS=""
+          for c in ${{ inputs.target-crates }}; do CRATE_FLAGS="$CRATE_FLAGS -p $c"; done
+          cargo clippy $CRATE_FLAGS -- -W clippy::all
+      - name: Fmt check
+        run: cargo fmt --all -- --check
+
+  # ══════════════════════════════════════════════════════════════════
+  # RELEASE — only if build-release is set
+  # ══════════════════════════════════════════════════════════════════
+  release-linux:
+    if: inputs.build-release
+    needs: [windows, lint]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with: { repository: '${{ inputs.checkout-repo }}', ref: '${{ inputs.checkout-ref }}', token: '${{ secrets.CHECKOUT_TOKEN }}' }
+      - name: Clone workspace repos
+        if: inputs.clone-repos != ''
+        run: |
+          TOKEN=${{ secrets.CHECKOUT_TOKEN }}
+          for rd in ${{ inputs.clone-repos }}; do
+            r="${rd%%:*}"; d="${rd##*:}"
+            [ ! -d "$d" ] && git clone --depth 1 "https://x-access-token:${TOKEN}@github.com/${r}.git" "$d" || echo "WARN: failed to clone ${r} into ${d}"
+          done
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build release binaries
+        run: |
+          CRATES="${{ inputs.release-binaries }}"
+          [ -z "$CRATES" ] && CRATES="${{ inputs.target-crates }}"
+          for c in $CRATES; do cargo build --release -p "$c"; done
+      - uses: actions/upload-artifact@v7
+        with: { name: 'linux-x86_64-${{ inputs.target-name }}', path: 'target/release/', retention-days: 7 }
+
+  release-macos:
+    if: inputs.build-release
+    needs: [windows, lint]
+    runs-on: ${{ inputs.use-self-hosted-macos && fromJSON('["self-hosted", "macOS"]') || 'macos-latest' }}
+    steps:
+      - uses: actions/checkout@v7
+        with: { repository: '${{ inputs.checkout-repo }}', ref: '${{ inputs.checkout-ref }}', token: '${{ secrets.CHECKOUT_TOKEN }}' }
+      - name: Clone workspace repos
+        if: inputs.clone-repos != ''
+        run: |
+          TOKEN=${{ secrets.CHECKOUT_TOKEN }}
+          for rd in ${{ inputs.clone-repos }}; do
+            r="${rd%%:*}"; d="${rd##*:}"
+            [ ! -d "$d" ] && git clone --depth 1 "https://x-access-token:${TOKEN}@github.com/${r}.git" "$d" || echo "WARN: failed to clone ${r} into ${d}"
+          done
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build release binaries
+        run: |
+          CRATES="${{ inputs.release-binaries }}"
+          [ -z "$CRATES" ] && CRATES="${{ inputs.target-crates }}"
+          for c in $CRATES; do cargo build --release -p "$c"; done
+      - uses: actions/upload-artifact@v7
+        with: { name: 'macos-arm64-${{ inputs.target-name }}', path: 'target/release/', retention-days: 7 }
+
+  release-windows:
+    if: inputs.build-release
+    needs: [windows, lint]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+        with: { repository: '${{ inputs.checkout-repo }}', ref: '${{ inputs.checkout-ref }}', token: '${{ secrets.CHECKOUT_TOKEN }}' }
+      - name: Clone workspace repos
+        if: inputs.clone-repos != ''
+        shell: bash
+        run: |
+          TOKEN=${{ secrets.CHECKOUT_TOKEN }}
+          for rd in ${{ inputs.clone-repos }}; do
+            r="${rd%%:*}"; d="${rd##*:}"
+            [ ! -d "$d" ] && git clone --depth 1 "https://x-access-token:${TOKEN}@github.com/${r}.git" "$d" || echo "WARN: failed to clone ${r} into ${d}"
+          done
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build release binaries
+        shell: bash
+        run: |
+          CRATES="${{ inputs.release-binaries }}"
+          [ -z "$CRATES" ] && CRATES="${{ inputs.target-crates }}"
+          for c in $CRATES; do cargo build --release -p "$c"; done
+      - uses: actions/upload-artifact@v7
+        with: { name: 'windows-x86_64-${{ inputs.target-name }}', path: 'target/release/', retention-days: 7 }
+
+  # ══════════════════════════════════════════════════════════════════
+  # GATE — overall status (fails CI if any required job failed)
+  # ══════════════════════════════════════════════════════════════════
+  ci-complete:
+    if: always()
+    needs:
+      - macos
+      - windows
+      - check-wasm
+      - lint
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "=== CI Results for ${{ inputs.target-name }} ==="
+          echo "  macOS:   ${{ needs.macos.result }}"
+          echo "  Windows: ${{ needs.windows.result }}"
+          echo "  WASM:    ${{ needs.check-wasm.result }}"
+          echo "  Lint:    ${{ needs.lint.result }}"
+
+          [ "${{ needs.macos.result }}" = "failure" ] && echo "MACOS BUILD/TEST FAILED" && exit 1
+          [ "${{ needs.windows.result }}" = "failure" ] && echo "WINDOWS BUILD/TEST FAILED" && exit 1
+          [ "${{ needs.check-wasm.result }}" = "failure" ] && echo "WASM BUILD FAILED" && exit 1
+          [ "${{ needs.lint.result }}" = "failure" ] && echo "WARNING: Lint failed (non-blocking)"
+
+          echo ""
+          echo "CI PASSED for ${{ inputs.target-name }}"
