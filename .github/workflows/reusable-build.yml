@@ -23,8 +23,13 @@ on:
         required: false
         type: string
         default: ''
+      checkout-path:
+        description: 'Subdirectory (relative to the job workspace root) to check out checkout-repo into. Leave as "." for a workspace with no external path-dependencies (checkout goes to the workspace root, same as before). Set this when checkout-repo has crates that path-depend on sibling repos outside itself (e.g. "../../../other-repo/crates/x") - clone-repos entries then land as TRUE siblings of this directory, matching what those path-deps expect.'
+        required: false
+        type: string
+        default: '.'
       clone-repos:
-        description: 'Space-separated "owner/repo:localdir" pairs to shallow-clone into the workspace before building (all cloned with the same checkout-token)'
+        description: 'Space-separated "owner/repo:localdir" pairs to shallow-clone as siblings of checkout-path (all cloned with the same checkout-token)'
         required: false
         type: string
         default: ''
@@ -69,6 +74,11 @@ on:
         required: false
         type: string
         default: 'v1'
+      run-linux:
+        description: 'Run a native Linux build+test job on ubuntu-latest (a GitHub-hosted runner, no self-hosted dependency). Runs independently/in parallel with macos and windows, so it reports back fastest - a practical way to prioritize Linux feedback without a fake sequential gate (GitHub Actions needs: graphs are static per file, so true per-caller reordering of macos/windows priority isn`t supported here).'
+        required: false
+        type: boolean
+        default: false
       use-self-hosted-macos:
         description: 'Run the macOS job on a self-hosted runner instead of macos-latest'
         required: false
@@ -108,13 +118,13 @@ jobs:
   # normal macOS→Windows chain.)
   # ══════════════════════════════════════════════════════════════════
 
-  macos:
-    name: 'macos (build + test)'
-    if: ${{ !contains(github.event.pull_request.labels.*.name, 'ci:windows-only') || contains(github.event.pull_request.labels.*.name, 'ci:all') }}
-    runs-on: ${{ inputs.use-self-hosted-macos && fromJSON('["self-hosted", "macOS"]') || 'macos-latest' }}
+  linux:
+    name: 'linux (build + test)'
+    if: inputs.run-linux
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-        with: { repository: '${{ inputs.checkout-repo }}', ref: '${{ inputs.checkout-ref }}', token: '${{ secrets.CHECKOUT_TOKEN }}' }
+        with: { repository: '${{ inputs.checkout-repo }}', ref: '${{ inputs.checkout-ref }}', token: '${{ secrets.CHECKOUT_TOKEN }}', path: '${{ inputs.checkout-path }}' }
       - name: Clone workspace repos
         if: inputs.clone-repos != ''
         shell: bash
@@ -126,9 +136,10 @@ jobs:
           done
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-        with: { shared-key: platform-macos }
+        with: { shared-key: platform-linux, workspaces: '${{ inputs.checkout-path }}' }
       - name: Cargo check
         shell: bash
+        working-directory: ${{ inputs.checkout-path }}
         run: |
           CRATE_FLAGS=""
           for c in ${{ inputs.target-crates }}; do CRATE_FLAGS="$CRATE_FLAGS -p $c"; done
@@ -136,6 +147,43 @@ jobs:
       - name: Cargo test
         if: inputs.run-tests
         shell: bash
+        working-directory: ${{ inputs.checkout-path }}
+        run: |
+          CRATE_FLAGS=""
+          for c in ${{ inputs.target-crates }}; do CRATE_FLAGS="$CRATE_FLAGS -p $c"; done
+          cargo test $CRATE_FLAGS --lib
+          cargo test $CRATE_FLAGS --tests
+
+  macos:
+    name: 'macos (build + test)'
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'ci:windows-only') || contains(github.event.pull_request.labels.*.name, 'ci:all') }}
+    runs-on: ${{ inputs.use-self-hosted-macos && fromJSON('["self-hosted", "macOS"]') || 'macos-latest' }}
+    steps:
+      - uses: actions/checkout@v7
+        with: { repository: '${{ inputs.checkout-repo }}', ref: '${{ inputs.checkout-ref }}', token: '${{ secrets.CHECKOUT_TOKEN }}', path: '${{ inputs.checkout-path }}' }
+      - name: Clone workspace repos
+        if: inputs.clone-repos != ''
+        shell: bash
+        run: |
+          TOKEN=${{ secrets.CHECKOUT_TOKEN }}
+          for rd in ${{ inputs.clone-repos }}; do
+            r="${rd%%:*}"; d="${rd##*:}"
+            [ ! -d "$d" ] && git clone --depth 1 "https://x-access-token:${TOKEN}@github.com/${r}.git" "$d" || echo "WARN: failed to clone ${r} into ${d}"
+          done
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with: { shared-key: platform-macos, workspaces: '${{ inputs.checkout-path }}' }
+      - name: Cargo check
+        shell: bash
+        working-directory: ${{ inputs.checkout-path }}
+        run: |
+          CRATE_FLAGS=""
+          for c in ${{ inputs.target-crates }}; do CRATE_FLAGS="$CRATE_FLAGS -p $c"; done
+          cargo check $CRATE_FLAGS
+      - name: Cargo test
+        if: inputs.run-tests
+        shell: bash
+        working-directory: ${{ inputs.checkout-path }}
         run: |
           CRATE_FLAGS=""
           for c in ${{ inputs.target-crates }}; do CRATE_FLAGS="$CRATE_FLAGS -p $c"; done
@@ -149,7 +197,7 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
-        with: { repository: '${{ inputs.checkout-repo }}', ref: '${{ inputs.checkout-ref }}', token: '${{ secrets.CHECKOUT_TOKEN }}' }
+        with: { repository: '${{ inputs.checkout-repo }}', ref: '${{ inputs.checkout-ref }}', token: '${{ secrets.CHECKOUT_TOKEN }}', path: '${{ inputs.checkout-path }}' }
       - name: Clone workspace repos
         if: inputs.clone-repos != ''
         shell: bash
@@ -161,9 +209,10 @@ jobs:
           done
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-        with: { shared-key: platform-windows }
+        with: { shared-key: platform-windows, workspaces: '${{ inputs.checkout-path }}' }
       - name: Cargo check
         shell: bash
+        working-directory: ${{ inputs.checkout-path }}
         run: |
           CRATE_FLAGS=""
           for c in ${{ inputs.target-crates }}; do CRATE_FLAGS="$CRATE_FLAGS -p $c"; done
@@ -171,6 +220,7 @@ jobs:
       - name: Cargo test
         if: inputs.run-tests
         shell: bash
+        working-directory: ${{ inputs.checkout-path }}
         run: |
           CRATE_FLAGS=""
           for c in ${{ inputs.target-crates }}; do CRATE_FLAGS="$CRATE_FLAGS -p $c"; done
@@ -182,7 +232,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-        with: { repository: '${{ inputs.checkout-repo }}', ref: '${{ inputs.checkout-ref }}', token: '${{ secrets.CHECKOUT_TOKEN }}' }
+        with: { repository: '${{ inputs.checkout-repo }}', ref: '${{ inputs.checkout-ref }}', token: '${{ secrets.CHECKOUT_TOKEN }}', path: '${{ inputs.checkout-path }}' }
       - name: Clone workspace repos
         if: inputs.clone-repos != ''
         run: |
@@ -195,8 +245,10 @@ jobs:
       - run: rustup target add wasm32-unknown-unknown
       - run: cargo install wasm-bindgen-cli
       - uses: Swatinem/rust-cache@v2
-        with: { prefix-key: 'rust-wasm' }
-      - run: for c in ${{ inputs.target-crates }}; do cargo check -p "$c" --target wasm32-unknown-unknown; done
+        with: { prefix-key: 'rust-wasm', workspaces: '${{ inputs.checkout-path }}' }
+      - name: Check wasm target
+        working-directory: ${{ inputs.checkout-path }}
+        run: for c in ${{ inputs.target-crates }}; do cargo check -p "$c" --target wasm32-unknown-unknown; done
 
   # ══════════════════════════════════════════════════════════════════
   # LINT — gated on the full platform chain, consistent with not
@@ -209,7 +261,7 @@ jobs:
     continue-on-error: true
     steps:
       - uses: actions/checkout@v7
-        with: { repository: '${{ inputs.checkout-repo }}', ref: '${{ inputs.checkout-ref }}', token: '${{ secrets.CHECKOUT_TOKEN }}' }
+        with: { repository: '${{ inputs.checkout-repo }}', ref: '${{ inputs.checkout-ref }}', token: '${{ secrets.CHECKOUT_TOKEN }}', path: '${{ inputs.checkout-path }}' }
       - name: Clone workspace repos
         if: inputs.clone-repos != ''
         run: |
@@ -221,12 +273,15 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with: { components: 'rustfmt, clippy' }
       - uses: Swatinem/rust-cache@v2
+        with: { workspaces: '${{ inputs.checkout-path }}' }
       - name: Clippy
+        working-directory: ${{ inputs.checkout-path }}
         run: |
           CRATE_FLAGS=""
           for c in ${{ inputs.target-crates }}; do CRATE_FLAGS="$CRATE_FLAGS -p $c"; done
           cargo clippy $CRATE_FLAGS -- -W clippy::all
       - name: Fmt check
+        working-directory: ${{ inputs.checkout-path }}
         run: cargo fmt --all -- --check
 
   # ══════════════════════════════════════════════════════════════════
@@ -242,7 +297,7 @@ jobs:
     continue-on-error: true
     steps:
       - uses: actions/checkout@v7
-        with: { repository: '${{ inputs.checkout-repo }}', ref: '${{ inputs.checkout-ref }}', token: '${{ secrets.CHECKOUT_TOKEN }}' }
+        with: { repository: '${{ inputs.checkout-repo }}', ref: '${{ inputs.checkout-ref }}', token: '${{ secrets.CHECKOUT_TOKEN }}', path: '${{ inputs.checkout-path }}' }
       - name: Clone workspace repos
         if: inputs.clone-repos != ''
         run: |
@@ -252,6 +307,7 @@ jobs:
             [ ! -d "$d" ] && git clone --depth 1 "https://x-access-token:${TOKEN}@github.com/${r}.git" "$d" || echo "WARN: failed to clone ${r} into ${d}"
           done
       - name: Ensure deny.toml (fetch shared default if repo has none)
+        working-directory: ${{ inputs.checkout-path }}
         run: |
           if [ -f deny.toml ]; then
             echo "Using repo-local deny.toml"
@@ -262,10 +318,13 @@ jobs:
       - name: Install cargo-deny
         run: cargo install cargo-deny --locked
       - name: Check licenses
+        working-directory: ${{ inputs.checkout-path }}
         run: cargo deny check licenses
       - name: Check advisories (vulnerabilities)
+        working-directory: ${{ inputs.checkout-path }}
         run: cargo deny check advisories
       - name: Check bans
+        working-directory: ${{ inputs.checkout-path }}
         run: cargo deny check bans
 
   security-audit:
@@ -275,7 +334,7 @@ jobs:
     continue-on-error: true
     steps:
       - uses: actions/checkout@v7
-        with: { repository: '${{ inputs.checkout-repo }}', ref: '${{ inputs.checkout-ref }}', token: '${{ secrets.CHECKOUT_TOKEN }}' }
+        with: { repository: '${{ inputs.checkout-repo }}', ref: '${{ inputs.checkout-ref }}', token: '${{ secrets.CHECKOUT_TOKEN }}', path: '${{ inputs.checkout-path }}' }
       - name: Clone workspace repos
         if: inputs.clone-repos != ''
         run: |
@@ -287,6 +346,7 @@ jobs:
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
       - name: Dependency audit
+        working-directory: ${{ inputs.checkout-path }}
         run: |
           IGNORE_FLAGS=""
           for id in ${{ inputs.security-audit-ignore }}; do IGNORE_FLAGS="$IGNORE_FLAGS --ignore $id"; done
@@ -301,7 +361,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-        with: { repository: '${{ inputs.checkout-repo }}', ref: '${{ inputs.checkout-ref }}', token: '${{ secrets.CHECKOUT_TOKEN }}' }
+        with: { repository: '${{ inputs.checkout-repo }}', ref: '${{ inputs.checkout-ref }}', token: '${{ secrets.CHECKOUT_TOKEN }}', path: '${{ inputs.checkout-path }}' }
       - name: Clone workspace repos
         if: inputs.clone-repos != ''
         run: |
@@ -312,13 +372,15 @@ jobs:
           done
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with: { workspaces: '${{ inputs.checkout-path }}' }
       - name: Build release binaries
+        working-directory: ${{ inputs.checkout-path }}
         run: |
           CRATES="${{ inputs.release-binaries }}"
           [ -z "$CRATES" ] && CRATES="${{ inputs.target-crates }}"
           for c in $CRATES; do cargo build --release -p "$c"; done
       - uses: actions/upload-artifact@v7
-        with: { name: 'linux-x86_64-${{ inputs.target-name }}', path: 'target/release/', retention-days: 7 }
+        with: { name: 'linux-x86_64-${{ inputs.target-name }}', path: '${{ inputs.checkout-path }}/target/release/', retention-days: 7 }
 
   release-macos:
     if: inputs.build-release
@@ -326,7 +388,7 @@ jobs:
     runs-on: ${{ inputs.use-self-hosted-macos && fromJSON('["self-hosted", "macOS"]') || 'macos-latest' }}
     steps:
       - uses: actions/checkout@v7
-        with: { repository: '${{ inputs.checkout-repo }}', ref: '${{ inputs.checkout-ref }}', token: '${{ secrets.CHECKOUT_TOKEN }}' }
+        with: { repository: '${{ inputs.checkout-repo }}', ref: '${{ inputs.checkout-ref }}', token: '${{ secrets.CHECKOUT_TOKEN }}', path: '${{ inputs.checkout-path }}' }
       - name: Clone workspace repos
         if: inputs.clone-repos != ''
         run: |
@@ -337,13 +399,15 @@ jobs:
           done
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with: { workspaces: '${{ inputs.checkout-path }}' }
       - name: Build release binaries
+        working-directory: ${{ inputs.checkout-path }}
         run: |
           CRATES="${{ inputs.release-binaries }}"
           [ -z "$CRATES" ] && CRATES="${{ inputs.target-crates }}"
           for c in $CRATES; do cargo build --release -p "$c"; done
       - uses: actions/upload-artifact@v7
-        with: { name: 'macos-arm64-${{ inputs.target-name }}', path: 'target/release/', retention-days: 7 }
+        with: { name: 'macos-arm64-${{ inputs.target-name }}', path: '${{ inputs.checkout-path }}/target/release/', retention-days: 7 }
 
   release-windows:
     if: inputs.build-release
@@ -351,7 +415,7 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
-        with: { repository: '${{ inputs.checkout-repo }}', ref: '${{ inputs.checkout-ref }}', token: '${{ secrets.CHECKOUT_TOKEN }}' }
+        with: { repository: '${{ inputs.checkout-repo }}', ref: '${{ inputs.checkout-ref }}', token: '${{ secrets.CHECKOUT_TOKEN }}', path: '${{ inputs.checkout-path }}' }
       - name: Clone workspace repos
         if: inputs.clone-repos != ''
         shell: bash
@@ -363,14 +427,16 @@ jobs:
           done
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with: { workspaces: '${{ inputs.checkout-path }}' }
       - name: Build release binaries
         shell: bash
+        working-directory: ${{ inputs.checkout-path }}
         run: |
           CRATES="${{ inputs.release-binaries }}"
           [ -z "$CRATES" ] && CRATES="${{ inputs.target-crates }}"
           for c in $CRATES; do cargo build --release -p "$c"; done
       - uses: actions/upload-artifact@v7
-        with: { name: 'windows-x86_64-${{ inputs.target-name }}', path: 'target/release/', retention-days: 7 }
+        with: { name: 'windows-x86_64-${{ inputs.target-name }}', path: '${{ inputs.checkout-path }}/target/release/', retention-days: 7 }
 
   # ══════════════════════════════════════════════════════════════════
   # GATE — overall status (fails CI if any required job failed)
@@ -378,6 +444,7 @@ jobs:
   ci-complete:
     if: always()
     needs:
+      - linux
       - macos
       - windows
       - check-wasm
@@ -388,6 +455,7 @@ jobs:
     steps:
       - run: |
           echo "=== CI Results for ${{ inputs.target-name }} ==="
+          echo "  Linux:   ${{ needs.linux.result }}"
           echo "  macOS:   ${{ needs.macos.result }}"
           echo "  Windows: ${{ needs.windows.result }}"
           echo "  WASM:    ${{ needs.check-wasm.result }}"
@@ -395,6 +463,7 @@ jobs:
           echo "  cargo-deny:     ${{ needs.cargo-deny.result }}"
           echo "  Security audit: ${{ needs.security-audit.result }}"
 
+          [ "${{ needs.linux.result }}" = "failure" ] && echo "LINUX BUILD/TEST FAILED" && exit 1
           [ "${{ needs.macos.result }}" = "failure" ] && echo "MACOS BUILD/TEST FAILED" && exit 1
           [ "${{ needs.windows.result }}" = "failure" ] && echo "WINDOWS BUILD/TEST FAILED" && exit 1
           [ "${{ needs.check-wasm.result }}" = "failure" ] && echo "WASM BUILD FAILED" && exit 1
