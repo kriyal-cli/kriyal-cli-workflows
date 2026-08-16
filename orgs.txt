@@ -1,0 +1,12 @@
+kriyal-server
+kriyal-base
+IndicNode-Kriyal
+indicnode-resources
+indicnode-restricted
+kriyal-marketplace
+kriyal-mcp
+kriyal-OSSupport
+kriyal-tantu
+kriyal-tools
+kriyal-vendor
+kriyalos

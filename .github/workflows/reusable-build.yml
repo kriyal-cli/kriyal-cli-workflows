@@ -64,6 +64,11 @@ on:
         required: false
         type: string
         default: ''
+      deny-toml-ref:
+        description: 'Ref of kriyal-cli/kriyal-cli-workflows to fetch the shared default deny.toml from, used only when checkout-repo has no deny.toml of its own'
+        required: false
+        type: string
+        default: 'v1'
       use-self-hosted-macos:
         description: 'Run the macOS job on a self-hosted runner instead of macos-latest'
         required: false
@@ -246,6 +251,14 @@ jobs:
             r="${rd%%:*}"; d="${rd##*:}"
             [ ! -d "$d" ] && git clone --depth 1 "https://x-access-token:${TOKEN}@github.com/${r}.git" "$d" || echo "WARN: failed to clone ${r} into ${d}"
           done
+      - name: Ensure deny.toml (fetch shared default if repo has none)
+        run: |
+          if [ -f deny.toml ]; then
+            echo "Using repo-local deny.toml"
+          else
+            echo "No local deny.toml - fetching shared default (ref: ${{ inputs.deny-toml-ref }})"
+            curl -fsSL -o deny.toml "https://raw.githubusercontent.com/kriyal-cli/kriyal-cli-workflows/${{ inputs.deny-toml-ref }}/deny.toml"
+          fi
       - name: Install cargo-deny
         run: cargo install cargo-deny --locked
       - name: Check licenses

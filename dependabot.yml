@@ -1,0 +1,18 @@
+# Shared default Dependabot config, synced into every tracked repo's
+# .github/dependabot.yml by .github/workflows/sync-dependabot.yml. Edit
+# this file to change the policy everywhere - do not edit the copies in
+# individual repos, they get overwritten on the next sync.
+
+version: 2
+updates:
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10

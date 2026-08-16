@@ -1,0 +1,74 @@
+name: Sync dependabot.yml to tracked repos
+on:
+  schedule:
+    - cron: '0 6 * * 1' # weekly, Monday 06:00 UTC
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - dependabot.yml
+      - orgs.txt
+      - .github/workflows/sync-dependabot.yml
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Sync dependabot.yml into every tracked org's repos
+        run: |
+          set -u
+          TEMPLATE_B64=$(base64 < dependabot.yml | tr -d '\n')
+          UPDATED=0
+          SKIPPED=0
+          FAILED=0
+
+          while IFS= read -r org; do
+            [ -z "$org" ] && continue
+            page=1
+            while :; do
+              batch=$(gh api "orgs/${org}/repos?type=all&per_page=100&page=${page}" --jq '[.[] | select(.fork==false and .archived==false) | .full_name]' 2>/dev/null) || batch=""
+              [ -z "$batch" ] && batch="[]"
+              count=$(echo "$batch" | jq 'length')
+              [ "$count" -eq 0 ] && break
+
+              for repo in $(echo "$batch" | jq -r '.[]'); do
+                existing_sha=$(gh api "repos/${repo}/contents/.github/dependabot.yml?ref=$(gh api "repos/${repo}" --jq '.default_branch')" --jq '.sha' 2>/dev/null) || existing_sha=""
+                existing_content=$(gh api "repos/${repo}/contents/.github/dependabot.yml?ref=$(gh api "repos/${repo}" --jq '.default_branch')" --jq '.content' 2>/dev/null | tr -d '\n') || existing_content=""
+
+                if [ "$existing_content" = "$TEMPLATE_B64" ]; then
+                  SKIPPED=$((SKIPPED+1))
+                  continue
+                fi
+
+                branch=$(gh api "repos/${repo}" --jq '.default_branch' 2>/dev/null) || { FAILED=$((FAILED+1)); echo "FAILED (no default branch): ${repo}"; continue; }
+
+                if [ -n "$existing_sha" ]; then
+                  gh api -X PUT "repos/${repo}/contents/.github/dependabot.yml" \
+                    -f message="chore: sync dependabot.yml from kriyal-cli-workflows" \
+                    -f content="$TEMPLATE_B64" -f sha="$existing_sha" -f branch="$branch" >/dev/null 2>&1 \
+                    && { UPDATED=$((UPDATED+1)); echo "UPDATED: ${repo}"; } \
+                    || { FAILED=$((FAILED+1)); echo "FAILED (update): ${repo}"; }
+                else
+                  gh api -X PUT "repos/${repo}/contents/.github/dependabot.yml" \
+                    -f message="chore: add dependabot.yml from kriyal-cli-workflows" \
+                    -f content="$TEMPLATE_B64" -f branch="$branch" >/dev/null 2>&1 \
+                    && { UPDATED=$((UPDATED+1)); echo "CREATED: ${repo}"; } \
+                    || { FAILED=$((FAILED+1)); echo "FAILED (create): ${repo}"; }
+                fi
+              done
+
+              [ "$count" -lt 100 ] && break
+              page=$((page+1))
+            done
+          done < orgs.txt
+
+          echo ""
+          echo "=== Sync summary ==="
+          echo "Updated/created: $UPDATED"
+          echo "Already in sync: $SKIPPED"
+          echo "Failed:          $FAILED"
+          [ "$FAILED" -gt 0 ] && exit 1
+          exit 0

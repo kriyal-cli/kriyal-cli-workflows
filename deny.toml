@@ -1,0 +1,36 @@
+# Shared default cargo-deny config, fetched by reusable-build.yml's
+# cargo-deny job for any calling repo that doesn't have its own deny.toml.
+# A repo with stricter/different needs can always add a local deny.toml
+# to override this - the fetch only happens when one isn't present.
+
+[graph]
+targets = []
+
+[advisories]
+ignore = []
+
+[licenses]
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Unicode-3.0",
+  "Zlib",
+  "CC0-1.0",
+  "MPL-2.0",
+]
+confidence-threshold = 0.8
+
+[bans]
+multiple-versions = "warn"
+wildcards = "warn"
+deny = [
+  { name = "openssl" },
+  { name = "lazy_static" },
+]
+
+[sources]
+unknown-registry = "warn"
+unknown-git = "warn"
