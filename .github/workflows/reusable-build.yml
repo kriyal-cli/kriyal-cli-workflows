@@ -79,6 +79,11 @@ on:
         required: false
         type: boolean
         default: false
+      run-windows:
+        description: 'Run the windows build+test job. Set false to skip Windows entirely (e.g. while a Windows-only toolchain gap - like a missing OPENSSL_DIR for a sqlite/openssl-linking crate - is unresolved) without blocking linux/macos or anything gated on this workflow overall succeeding.'
+        required: false
+        type: boolean
+        default: true
       use-self-hosted-macos:
         description: 'Run the macOS job on a self-hosted runner instead of macos-latest'
         required: false
@@ -193,7 +198,7 @@ jobs:
   windows:
     name: 'windows (build + test)'
     needs: [macos]
-    if: ${{ always() && needs.macos.result != 'failure' && (!contains(github.event.pull_request.labels.*.name, 'ci:macos-only') || contains(github.event.pull_request.labels.*.name, 'ci:all')) }}
+    if: ${{ always() && inputs.run-windows && needs.macos.result != 'failure' && (!contains(github.event.pull_request.labels.*.name, 'ci:macos-only') || contains(github.event.pull_request.labels.*.name, 'ci:all')) }}
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
@@ -257,6 +262,7 @@ jobs:
   # ══════════════════════════════════════════════════════════════════
   lint:
     needs: [windows]
+    if: always() && needs.windows.result != 'failure'
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
