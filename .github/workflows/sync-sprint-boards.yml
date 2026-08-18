@@ -1,0 +1,49 @@
+# Keeps every org's Sprint Board (GitHub Projects v2) CI + Status fields
+# in sync with live PR state.
+#
+# Lives in this PUBLIC repo (not kriyal-base/build, where it originated)
+# specifically so it isn't blocked by kriyal-base's private-repo Actions
+# billing - public repos get free/unmetered Actions minutes regardless of
+# an org's spending limit. Nothing in scripts/sync_sprint_board.py or
+# orgs.txt is sensitive (org names + Project field ids), so this is a safe
+# repo for it to live in.
+#
+# Why centralized instead of per-repo CI: wiring a "report status" step
+# into every repo's own ci.yml would fire on every push across dozens of
+# repos - more Actions minutes + GitHub API calls than needed for something
+# that only has to be roughly-fresh. This runs once (schedule or manual
+# trigger) and does ONE paginated GraphQL query per org's board, writing
+# only the fields that actually changed - see scripts/sync_sprint_board.py.
+#
+# Secrets: PROJECT_SYNC_TOKEN - PAT with `project` scope (write) across
+# every org in orgs.txt. Projects v2 write access for ORG-level (not
+# repo-level) projects isn't grantable to the default GITHUB_TOKEN, so this
+# can't reuse the existing SYNC_TOKEN unless you already know it carries
+# `project` scope.
+
+name: sync-sprint-boards
+
+on:
+  schedule:
+    # 13:00 UTC daily - adjust to land before your actual standup time.
+    - cron: '0 13 * * *'
+  workflow_dispatch:
+    inputs:
+      org:
+        description: 'Sync just one org (leave blank for all orgs in orgs.txt)'
+        required: false
+        type: string
+
+concurrency:
+  group: sync-sprint-boards
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Sync board fields
+        env:
+          GH_TOKEN: ${{ secrets.PROJECT_SYNC_TOKEN }}
+        run: python3 scripts/sync_sprint_board.py ${{ inputs.org }}
