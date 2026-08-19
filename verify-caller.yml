@@ -1,0 +1,46 @@
+# Managed by kriyal-cli-workflows/sync-verify-caller.yml — DO NOT EDIT HERE.
+# Local edits are overwritten on the next sync. To opt a repo out, replace the
+# whole file with one containing the line `# kriyal-sync: off` (the sync
+# respects that marker and never touches the file again). To customise inputs
+# for one repo, opt out and keep your own copy.
+#
+# Tiers (see kriyal-cli/kriyal-cli-workflows/.github/workflows/reusable-verify.yml):
+#   push          -> fast    fmt + clippy + artefact audit + dependency hygiene
+#   pull_request  -> deep    + Kani proofs (per crate carrying harnesses) + geiger, cache-gated
+#   schedule      -> nightly  deep, cache disabled
+name: Verify
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+    inputs:
+      tier:
+        description: "fast | deep | nightly"
+        type: string
+        default: deep
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    uses: kriyal-cli/kriyal-cli-workflows/.github/workflows/reusable-verify.yml@main
+    with:
+      tier: >-
+        ${{ github.event_name == 'schedule' && 'nightly'
+            || github.event_name == 'workflow_dispatch' && inputs.tier
+            || github.event_name == 'pull_request' && 'deep'
+            || 'fast' }}
+      # Hosted by default; set the org/repo variable CI_RUNNER (e.g.
+      # "self-hosted") to move every synced repo onto your own runners at once.
+      runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+      clippy-args: >-
+        -D warnings -D clippy::correctness -D clippy::suspicious
+        -D clippy::perf -D clippy::complexity
+      # A repo that HAS Kani harnesses must keep them green; a repo with none
+      # is unaffected (discovery finds nothing and the job is skipped).
+      kani-enforce: true

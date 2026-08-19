@@ -1,0 +1,112 @@
+# Propagate `verify-caller.yml` into every tracked repo as
+# `.github/workflows/verify.yml`, so every repo — including ones created after
+# this ran — inherits the same tiered verification without anyone remembering
+# to add it. Same mechanism as sync-dependabot.yml (orgs.txt + the contents
+# API + SYNC_TOKEN), with two rules that matter for a workflow rather than a
+# config file:
+#
+#   * RUST ONLY — a repo with no root Cargo.toml gets nothing. Pushing a Rust
+#     verify workflow into a docs or JS repo would hand it a permanently red
+#     Actions tab, which teaches people to ignore red.
+#   * OPT-OUT IS HONOURED — if the existing file contains `kriyal-sync: off`,
+#     the repo has taken ownership and the sync never touches it again.
+name: Sync verify workflow to tracked repos
+
+on:
+  schedule:
+    - cron: '30 6 * * 1' # weekly, Monday 06:30 UTC (after the dependabot sync)
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: "Report what would change without writing"
+        type: boolean
+        default: false
+  push:
+    branches: [main]
+    paths:
+      - verify-caller.yml
+      - orgs.txt
+      - .github/workflows/sync-verify-caller.yml
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
+      DRY_RUN: ${{ inputs.dry-run || 'false' }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Sync verify.yml into every tracked org's Rust repos
+        run: |
+          set -u
+          TEMPLATE_B64=$(base64 < verify-caller.yml | tr -d '\n')
+          TARGET=".github/workflows/verify.yml"
+          UPDATED=0; SKIPPED=0; NOT_RUST=0; OPTED_OUT=0; FAILED=0
+
+          while IFS= read -r org; do
+            [ -z "$org" ] && continue
+            page=1
+            while :; do
+              batch=$(gh api "orgs/${org}/repos?type=all&per_page=100&page=${page}" \
+                --jq '[.[] | select(.fork==false and .archived==false) | .full_name]' 2>/dev/null) || batch=""
+              [ -z "$batch" ] && batch="[]"
+              count=$(echo "$batch" | jq 'length')
+              [ "$count" -eq 0 ] && break
+
+              for repo in $(echo "$batch" | jq -r '.[]'); do
+                if ! branch=$(gh api "repos/${repo}" --jq '.default_branch' 2>/dev/null); then
+                  FAILED=$((FAILED+1)); echo "FAILED (no default branch): ${repo}"; continue
+                fi
+
+                # Rust repos only — a root Cargo.toml is the marker.
+                if ! gh api "repos/${repo}/contents/Cargo.toml?ref=${branch}" --jq '.sha' >/dev/null 2>&1; then
+                  NOT_RUST=$((NOT_RUST+1)); continue
+                fi
+
+                existing_content=$(gh api "repos/${repo}/contents/${TARGET}?ref=${branch}" --jq '.content' 2>/dev/null | tr -d '\n') || existing_content=""
+                existing_sha=$(gh api "repos/${repo}/contents/${TARGET}?ref=${branch}" --jq '.sha' 2>/dev/null) || existing_sha=""
+
+                if [ -n "$existing_content" ] && echo "$existing_content" | base64 -d 2>/dev/null | grep -q 'kriyal-sync: off'; then
+                  OPTED_OUT=$((OPTED_OUT+1)); echo "OPTED OUT: ${repo}"; continue
+                fi
+                if [ "$existing_content" = "$TEMPLATE_B64" ]; then
+                  SKIPPED=$((SKIPPED+1)); continue
+                fi
+                if [ "$DRY_RUN" = "true" ]; then
+                  echo "WOULD SYNC: ${repo}"; UPDATED=$((UPDATED+1)); continue
+                fi
+
+                if [ -n "$existing_sha" ]; then
+                  if gh api -X PUT "repos/${repo}/contents/${TARGET}" \
+                       -f message="chore: sync verify.yml from kriyal-cli-workflows" \
+                       -f content="$TEMPLATE_B64" -f sha="$existing_sha" -f branch="$branch" >/dev/null 2>&1; then
+                    UPDATED=$((UPDATED+1)); echo "UPDATED: ${repo}"
+                  else
+                    FAILED=$((FAILED+1)); echo "FAILED (update): ${repo}"
+                  fi
+                elif gh api -X PUT "repos/${repo}/contents/${TARGET}" \
+                       -f message="chore: add verify.yml from kriyal-cli-workflows" \
+                       -f content="$TEMPLATE_B64" -f branch="$branch" >/dev/null 2>&1; then
+                  UPDATED=$((UPDATED+1)); echo "CREATED: ${repo}"
+                else
+                  FAILED=$((FAILED+1)); echo "FAILED (create): ${repo}"
+                fi
+              done
+
+              [ "$count" -lt 100 ] && break
+              page=$((page+1))
+            done
+          done < orgs.txt
+
+          echo ""
+          echo "=== Verify-workflow sync summary ==="
+          echo "Updated/created: $UPDATED"
+          echo "Already in sync: $SKIPPED"
+          echo "Opted out:       $OPTED_OUT"
+          echo "Not a Rust repo: $NOT_RUST"
+          echo "Failed:          $FAILED"
+          [ "$FAILED" -gt 0 ] && exit 1
+          exit 0

@@ -1,0 +1,48 @@
+name: Kani harness discovery
+description: >-
+  Emit the list of Cargo packages in a checkout that carry `#[kani::proof]`
+  harnesses, as a JSON array usable as a job matrix. Discovery by scanning, so
+  a harness added anywhere is picked up without anyone updating a list — the
+  same rule the local gate uses (a crate that HAS proofs must keep them green).
+inputs:
+  working-directory:
+    description: Directory to scan (a cargo workspace root).
+    required: false
+    default: "."
+outputs:
+  packages:
+    description: JSON array of package names carrying Kani harnesses (may be `[]`).
+    value: ${{ steps.scan.outputs.packages }}
+  count:
+    description: Number of packages found.
+    value: ${{ steps.scan.outputs.count }}
+runs:
+  using: composite
+  steps:
+    - id: scan
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        set -euo pipefail
+        # `cargo metadata` maps manifest paths to package names; the grep finds
+        # the files carrying harnesses. Intersecting the two gives the packages
+        # to verify, with no hand-maintained list to drift. jq only — no inline
+        # python, whose leading indentation cannot survive a YAML block scalar.
+        pkgs=()
+        while IFS=$'\t' read -r name manifest; do
+          dir="$(dirname "$manifest")"
+          if grep -rlq --include='*.rs' 'kani::proof' "$dir" 2>/dev/null; then
+            pkgs+=("$name")
+          fi
+        done < <(cargo metadata --no-deps --format-version=1 \
+                   | jq -r '.packages[] | "\(.name)\t\(.manifest_path)"')
+        if [ ${#pkgs[@]} -eq 0 ]; then
+          json='[]'
+          count=0
+        else
+          json="$(printf '%s\n' "${pkgs[@]}" | sort -u | jq -R . | jq -sc .)"
+          count=$(printf '%s\n' "${pkgs[@]}" | sort -u | wc -l | tr -d ' ')
+        fi
+        echo "packages=$json" >> "$GITHUB_OUTPUT"
+        echo "count=$count" >> "$GITHUB_OUTPUT"
+        echo "Kani harness packages: $json"

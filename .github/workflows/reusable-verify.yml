@@ -1,0 +1,260 @@
+# Tiered verification for a Rust workspace. Product-agnostic on purpose: no
+# repo names, crate names, paths, secrets or architecture — the caller passes
+# everything in. Anything product-specific (an unsafe-allowance policy, an
+# advisory-acceptance list, compliance controls) belongs in a private workflow
+# in the caller's own org that chains after this one.
+#
+# TIERS
+#   fast    fmt + clippy + artifact audit + dependency hygiene   (every push)
+#   deep    + Kani proofs (one job per discovered crate) + geiger, cache-gated
+#   nightly  deep with the cache disabled — a cache is an assumption, and the
+#            nightly is where assumptions get checked
+#
+# The cache is what makes `deep` affordable: a crate's proof verdict and a
+# workspace's unsafe totals are pure functions of (sources | lockfile) plus the
+# toolchain versions, so an unchanged subject replays instead of re-running.
+name: Reusable verify
+
+on:
+  workflow_call:
+    inputs:
+      tier:
+        description: "fast | deep | nightly"
+        type: string
+        required: false
+        default: fast
+      checkout-repo:
+        description: "owner/repo to verify (default: the caller)."
+        type: string
+        required: false
+        default: ""
+      checkout-ref:
+        description: "Ref to check out (default: the triggering ref)."
+        type: string
+        required: false
+        default: ""
+      working-directory:
+        description: "Workspace root inside the checkout."
+        type: string
+        required: false
+        default: "."
+      runs-on:
+        description: "Runner label (set a self-hosted label to move CI off hosted minutes)."
+        type: string
+        required: false
+        default: ubuntu-latest
+      rust-toolchain:
+        description: "Toolchain for fmt/clippy; empty honours rust-toolchain.toml."
+        type: string
+        required: false
+        default: ""
+      clippy-args:
+        description: "Args after `cargo clippy --workspace --all-targets --`."
+        type: string
+        required: false
+        default: "-D warnings"
+      artifact-audit:
+        description: "Parse/lint the non-Rust artefacts (shell, YAML, JSON, TOML, JS, k8s)."
+        type: boolean
+        required: false
+        default: true
+      dependency-hygiene:
+        description: "cargo tree -d / cargo deny check bans / cargo machete (advisory)."
+        type: boolean
+        required: false
+        default: true
+      kani-enforce:
+        description: "In deep/nightly, fail the run when a discovered crate's proofs fail."
+        type: boolean
+        required: false
+        default: true
+      geiger:
+        description: "In deep/nightly, run cargo geiger and upload its JSON."
+        type: boolean
+        required: false
+        default: true
+    outputs:
+      kani-packages:
+        description: "JSON array of packages carrying Kani harnesses."
+        value: ${{ jobs.discover.outputs.packages }}
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------- fast tier
+  lint:
+    name: "fmt + clippy + artefacts"
+    runs-on: ${{ inputs.runs-on }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.checkout-repo }}
+          ref: ${{ inputs.checkout-ref }}
+
+      - name: Install Rust
+        run: |
+          set -euo pipefail
+          if [ -n "${{ inputs.rust-toolchain }}" ]; then
+            rustup toolchain install "${{ inputs.rust-toolchain }}" --component rustfmt,clippy --profile minimal
+            rustup default "${{ inputs.rust-toolchain }}"
+          else
+            rustup component add rustfmt clippy
+          fi
+          rustc --version && cargo --version
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ inputs.working-directory }}
+
+      - name: cargo fmt --check
+        working-directory: ${{ inputs.working-directory }}
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy
+        working-directory: ${{ inputs.working-directory }}
+        run: cargo clippy --workspace --all-targets -- ${{ inputs.clippy-args }}
+
+      - name: "Artefact audit (parse everything that is not Rust)"
+        if: ${{ inputs.artifact-audit }}
+        working-directory: ${{ inputs.working-directory }}
+        run: |
+          set -uo pipefail
+          rc=0
+          # Deterministic, offline parse checks — a broken workflow YAML or a
+          # shell syntax error must not reach a runner to be discovered.
+          while IFS= read -r -d '' f; do bash -n "$f" || rc=1; done \
+            < <(find . -name '*.sh' -not -path './target*/*' -not -path './node_modules/*' -print0)
+          while IFS= read -r -d '' f; do python3 -m py_compile "$f" || rc=1; done \
+            < <(find . -name '*.py' -not -path './target*/*' -not -path './node_modules/*' -print0)
+          while IFS= read -r -d '' f; do python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$f" || rc=1; done \
+            < <(find . -name '*.json' -not -path './target*/*' -not -path './node_modules/*' -print0)
+          while IFS= read -r -d '' f; do python3 -c 'import sys,tomllib; tomllib.load(open(sys.argv[1],"rb"))' "$f" || rc=1; done \
+            < <(find . -name '*.toml' -not -path './target*/*' -not -path './node_modules/*' -print0)
+          python3 -c 'import yaml' 2>/dev/null || pip install --quiet pyyaml
+          while IFS= read -r -d '' f; do
+            python3 -c 'import sys,yaml; list(yaml.safe_load_all(open(sys.argv[1])))' "$f" || rc=1
+          done < <(find . \( -name '*.yml' -o -name '*.yaml' \) -not -path './target*/*' -not -path './node_modules/*' -print0)
+          exit $rc
+
+      - name: "Shell + workflow + k8s lint (advisory)"
+        if: ${{ inputs.artifact-audit }}
+        continue-on-error: true
+        working-directory: ${{ inputs.working-directory }}
+        run: |
+          set -uo pipefail
+          command -v shellcheck >/dev/null || sudo apt-get install -y --no-install-recommends shellcheck
+          find . -name '*.sh' -not -path './target*/*' -print0 | xargs -0 -r shellcheck -S warning || true
+          if [ -d .github/workflows ]; then
+            bash <(curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash) >/dev/null
+            ./actionlint || true
+          fi
+
+      - name: "Dependency hygiene (advisory)"
+        if: ${{ inputs.dependency-hygiene }}
+        continue-on-error: true
+        working-directory: ${{ inputs.working-directory }}
+        run: |
+          set -uo pipefail
+          # A crate name with >=2 DISTINCT versions is the finding; the raw
+          # `cargo tree -d` also lists host/target and feature splits of the
+          # SAME version, which are not duplicates.
+          cargo tree -d --prefix none --format '{p}' -e normal,build,dev 2>/dev/null \
+            | awk '{print $1, $2}' | sort -u \
+            | awk '{c[$1]++; v[$1]=v[$1]" "$2} END {for (n in c) if (c[n]>1) print n":"v[n]}'
+          cargo install --locked cargo-deny >/dev/null 2>&1 || true
+          if [ -f deny.toml ]; then cargo deny check bans || true; fi
+
+  # ------------------------------------------------- deep / nightly discovery
+  discover:
+    name: "discover Kani harnesses"
+    if: ${{ inputs.tier != 'fast' }}
+    runs-on: ${{ inputs.runs-on }}
+    outputs:
+      packages: ${{ steps.d.outputs.packages }}
+      count: ${{ steps.d.outputs.count }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.checkout-repo }}
+          ref: ${{ inputs.checkout-ref }}
+      - id: d
+        uses: kriyal-cli/kriyal-cli-workflows/.github/actions/kani-discover@main
+        with:
+          working-directory: ${{ inputs.working-directory }}
+
+  kani:
+    name: "kani: ${{ matrix.package }}"
+    needs: discover
+    if: ${{ inputs.tier != 'fast' && needs.discover.outputs.count != '0' }}
+    runs-on: ${{ inputs.runs-on }}
+    strategy:
+      fail-fast: false
+      matrix:
+        package: ${{ fromJSON(needs.discover.outputs.packages) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.checkout-repo }}
+          ref: ${{ inputs.checkout-ref }}
+
+      # Cache the VERDICT, not just the build: keyed on the lockfile + the
+      # crate's sources, so an untouched crate is skipped entirely. `nightly`
+      # writes a key nothing restores, which is how it stays cold.
+      - id: verdict
+        uses: actions/cache@v4
+        with:
+          path: ${{ inputs.working-directory }}/.kani-verdict-${{ matrix.package }}
+          key: kani-${{ matrix.package }}-${{ inputs.tier == 'nightly' && github.run_id || hashFiles(format('{0}/**/Cargo.lock', inputs.working-directory), format('{0}/**/*.rs', inputs.working-directory)) }}
+
+      - name: Install Kani
+        if: ${{ steps.verdict.outputs.cache-hit != 'true' }}
+        run: |
+          set -euo pipefail
+          cargo install --locked kani-verifier
+          cargo kani setup
+
+      - name: "cargo kani -p ${{ matrix.package }}"
+        if: ${{ steps.verdict.outputs.cache-hit != 'true' }}
+        working-directory: ${{ inputs.working-directory }}
+        run: |
+          set -o pipefail
+          if cargo kani -p "${{ matrix.package }}" 2>&1 | tee kani.log; then
+            echo "verified ${{ matrix.package }}" > ".kani-verdict-${{ matrix.package }}"
+          else
+            grep -E 'VERIFICATION:- FAILED|^error' kani.log | head -40 || true
+            if [ "${{ inputs.kani-enforce }}" = "true" ]; then exit 1; fi
+          fi
+
+      - name: "cached verdict"
+        if: ${{ steps.verdict.outputs.cache-hit == 'true' }}
+        run: echo "proofs unchanged since the last verified run — replaying cached verdict"
+
+  geiger:
+    name: "unsafe surface (geiger)"
+    if: ${{ inputs.tier != 'fast' && inputs.geiger }}
+    runs-on: ${{ inputs.runs-on }}
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.checkout-repo }}
+          ref: ${{ inputs.checkout-ref }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ inputs.working-directory }}
+      - name: Run cargo geiger
+        working-directory: ${{ inputs.working-directory }}
+        run: |
+          set -uo pipefail
+          cargo install --locked cargo-geiger >/dev/null 2>&1 || true
+          # geiger exits non-zero whenever ANY unsafe exists anywhere, which is
+          # true of every real tree — the artefact is the deliverable, not the
+          # exit code. A consumer turns it into a pass/fail claim.
+          cargo geiger --output-format Json > geiger.json || true
+          python3 -c 'import json,sys; d=json.load(open("geiger.json")); print("packages:", len(d.get("packages", d if isinstance(d,list) else [])))' || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: geiger-json
+          path: ${{ inputs.working-directory }}/geiger.json
+          if-no-files-found: warn

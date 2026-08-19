@@ -15,6 +15,16 @@ and change rarely.
 
 ## Workflows
 
+### `reusable-verify.yml`
+
+Tiered verification for a Rust workspace — `fast` (fmt, clippy, artefact
+parse/lint, dependency hygiene) → `deep` (+ Kani proofs per crate that carries
+`#[kani::proof]` harnesses, + `cargo geiger`, both cache-gated) → `nightly`
+(deep with the cache disabled). `verify-caller.yml` is the caller that
+`sync-verify-caller.yml` propagates into every tracked Rust repo as
+`.github/workflows/verify.yml`, so new repos inherit it with no action. Full
+notes: [VERIFY.md](VERIFY.md).
+
 ### `reusable-build.yml`
 
 Build/test/lint/release pipeline for a Rust workspace, optionally spanning
