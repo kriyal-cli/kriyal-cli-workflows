@@ -42,6 +42,16 @@ jobs:
       - name: Sync verify.yml into every tracked org's Rust repos
         run: |
           set -u
+          # Pre-flight: writing under .github/workflows/ needs the token's
+          # `workflow` scope (classic PAT) or "Workflows: write" (fine-grained).
+          # Say so ONCE up front rather than 37 identical failures.
+          scopes=$(gh api -i rate_limit 2>/dev/null | tr -d '\r' | awk -F': ' 'tolower($1)=="x-oauth-scopes"{print $2}')
+          echo "SYNC_TOKEN scopes: ${scopes:-<none reported (fine-grained token?)>}"
+          case ",$scopes," in
+            *,workflow,*) : ;;
+            *) echo "::warning::SYNC_TOKEN may lack the 'workflow' scope — writes under .github/workflows/ will 403/404. Classic PAT: add 'workflow'. Fine-grained: grant 'Workflows: write' on the target orgs." ;;
+          esac
+
           TEMPLATE_B64=$(base64 < verify-caller.yml | tr -d '\n')
           TARGET=".github/workflows/verify.yml"
           UPDATED=0; SKIPPED=0; NOT_RUST=0; OPTED_OUT=0; FAILED=0
@@ -79,20 +89,29 @@ jobs:
                   echo "WOULD SYNC: ${repo}"; UPDATED=$((UPDATED+1)); continue
                 fi
 
+                # Capture stderr: a bare "FAILED" tells nobody anything. The
+                # first real run failed 37/37 and the reason was swallowed —
+                # it was the token's missing `workflow` scope, which writing
+                # under .github/workflows/ requires (and .github/dependabot.yml
+                # does NOT, which is why the older sync worked). Print the API
+                # message so the next failure diagnoses itself.
                 if [ -n "$existing_sha" ]; then
-                  if gh api -X PUT "repos/${repo}/contents/${TARGET}" \
-                       -f message="chore: sync verify.yml from kriyal-cli-workflows" \
-                       -f content="$TEMPLATE_B64" -f sha="$existing_sha" -f branch="$branch" >/dev/null 2>&1; then
-                    UPDATED=$((UPDATED+1)); echo "UPDATED: ${repo}"
-                  else
-                    FAILED=$((FAILED+1)); echo "FAILED (update): ${repo}"
-                  fi
-                elif gh api -X PUT "repos/${repo}/contents/${TARGET}" \
-                       -f message="chore: add verify.yml from kriyal-cli-workflows" \
-                       -f content="$TEMPLATE_B64" -f branch="$branch" >/dev/null 2>&1; then
-                  UPDATED=$((UPDATED+1)); echo "CREATED: ${repo}"
+                  err=$(gh api -X PUT "repos/${repo}/contents/${TARGET}" \
+                          -f message="chore: sync verify.yml from kriyal-cli-workflows" \
+                          -f content="$TEMPLATE_B64" -f sha="$existing_sha" -f branch="$branch" 2>&1 >/dev/null)
+                  rc=$?
                 else
-                  FAILED=$((FAILED+1)); echo "FAILED (create): ${repo}"
+                  err=$(gh api -X PUT "repos/${repo}/contents/${TARGET}" \
+                          -f message="chore: add verify.yml from kriyal-cli-workflows" \
+                          -f content="$TEMPLATE_B64" -f branch="$branch" 2>&1 >/dev/null)
+                  rc=$?
+                fi
+                if [ "$rc" -eq 0 ]; then
+                  UPDATED=$((UPDATED+1))
+                  echo "SYNCED: ${repo}"
+                else
+                  FAILED=$((FAILED+1))
+                  echo "FAILED: ${repo} -- $(echo "$err" | tr '\n' ' ' | cut -c1-200)"
                 fi
               done
 
