@@ -75,20 +75,15 @@ on:
         type: string
         default: 'v1'
       run-linux:
-        description: 'Run a native Linux build+test job on ubuntu-latest (a GitHub-hosted runner, no self-hosted dependency). Runs independently/in parallel with macos and windows, so it reports back fastest - a practical way to prioritize Linux feedback without a fake sequential gate (GitHub Actions needs: graphs are static per file, so true per-caller reordering of macos/windows priority isn`t supported here).'
+        description: 'Run a native Linux build+test job on ubuntu-latest (a GitHub-hosted runner, no self-hosted dependency). Runs FIRST; Windows is gated behind it (macOS removed 2026-08-29). Linux is 1x minutes and catches most genuine breaks, so Windows 2x minutes are only spent on a tree Linux already proved good.'
         required: false
         type: boolean
         default: false
       run-windows:
-        description: 'Run the windows build+test job. Set false to skip Windows entirely (e.g. while a Windows-only toolchain gap - like a missing OPENSSL_DIR for a sqlite/openssl-linking crate - is unresolved) without blocking linux/macos or anything gated on this workflow overall succeeding.'
+        description: 'Run the windows build+test job. Set false to skip Windows entirely (e.g. while a Windows-only toolchain gap - like a missing OPENSSL_DIR for a sqlite/openssl-linking crate - is unresolved) without blocking linux or anything gated on this workflow overall succeeding.'
         required: false
         type: boolean
         default: true
-      use-self-hosted-macos:
-        description: 'Run the macOS job on a self-hosted runner instead of macos-latest'
-        required: false
-        type: boolean
-        default: false
       concurrency-group:
         description: 'Concurrency group name - set the same value across callers that share a single-machine runner to serialize their builds'
         required: false
@@ -108,20 +103,33 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # ══════════════════════════════════════════════════════════════════
-  # PLATFORM PIPELINE — macOS first, Windows gated behind it.
+  # ==================================================================
+  # PLATFORM PIPELINE - Linux first, Windows gated behind it.
   #
-  # PR label escape hatch: a PR clearly scoped to one platform doesn't
-  # need the other platform to run at all. Attach the label in the PR's
-  # Labels sidebar - these are read from PR metadata, NOT the PR body
-  # or commit message.
-  #   - label `ci:windows-only` → skip macOS entirely, run Windows only
-  #   - label `ci:macos-only`   → run macOS only, skip Windows
-  #   - label `ci:all`          → force every platform regardless of
-  #     any other ci:*-only label present
-  # (No label, or ci:windows-only + ci:macos-only together, runs the
-  # normal macOS→Windows chain.)
-  # ══════════════════════════════════════════════════════════════════
+  # macOS was REMOVED (2026-08-29). It is not a supported CI platform for
+  # this fleet any more: the only macOS runner has been deregistered, and
+  # GitHub-hosted macOS bills at 10x the Linux rate, which on a Free
+  # plan's shared minute pool is the most expensive thing in the matrix.
+  # The macOS PROVISIONING scripts under macos/ in gh-runner-setup are
+  # deliberately KEPT - a replacement Mac is expected - so restoring this
+  # job later means re-adding it here, not rebuilding the tooling.
+  #
+  # ORDERING. Linux runs first and Windows is gated behind it, replacing
+  # the old macOS->Windows chain. Linux is the cheapest platform (1x
+  # minutes vs Windows' 2x) and the one most likely to catch a genuine
+  # break, so Windows minutes are only spent on a tree Linux already
+  # proved good - the fastest feedback and the cheapest failure.
+  #
+  # PR label escape hatch: a PR clearly scoped to one platform does not
+  # need the other to run. Attach the label in the PR's Labels sidebar -
+  # read from PR metadata, NOT the body or commit message.
+  #   - `ci:windows-only` -> skip the Linux gate, run Windows only
+  #   - `ci:linux-only`   -> run Linux only, skip Windows
+  #   - `ci:all`          -> force every platform regardless
+  # `ci:macos-only` is now INERT and is treated as no label at all, rather
+  # than silently skipping everything - an old PR still carrying it must
+  # not end up running nothing.
+  # ==================================================================
 
   linux:
     name: 'linux (build + test)'
@@ -159,46 +167,13 @@ jobs:
           cargo test $CRATE_FLAGS --lib
           cargo test $CRATE_FLAGS --tests
 
-  macos:
-    name: 'macos (build + test)'
-    if: ${{ !contains(github.event.pull_request.labels.*.name, 'ci:windows-only') || contains(github.event.pull_request.labels.*.name, 'ci:all') }}
-    runs-on: ${{ inputs.use-self-hosted-macos && fromJSON('["self-hosted", "macOS"]') || 'macos-latest' }}
-    steps:
-      - uses: actions/checkout@v7
-        with: { repository: '${{ inputs.checkout-repo }}', ref: '${{ inputs.checkout-ref }}', token: '${{ secrets.CHECKOUT_TOKEN }}', path: '${{ inputs.checkout-path }}' }
-      - name: Clone workspace repos
-        if: inputs.clone-repos != ''
-        shell: bash
-        run: |
-          TOKEN=${{ secrets.CHECKOUT_TOKEN }}
-          for rd in ${{ inputs.clone-repos }}; do
-            r="${rd%%:*}"; d="${rd##*:}"
-            [ ! -d "$d" ] && git clone --depth 1 "https://x-access-token:${TOKEN}@github.com/${r}.git" "$d" || echo "WARN: failed to clone ${r} into ${d}"
-          done
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with: { shared-key: platform-macos, workspaces: '${{ inputs.checkout-path }}' }
-      - name: Cargo check
-        shell: bash
-        working-directory: ${{ inputs.checkout-path }}
-        run: |
-          CRATE_FLAGS=""
-          for c in ${{ inputs.target-crates }}; do CRATE_FLAGS="$CRATE_FLAGS -p $c"; done
-          cargo check $CRATE_FLAGS
-      - name: Cargo test
-        if: inputs.run-tests
-        shell: bash
-        working-directory: ${{ inputs.checkout-path }}
-        run: |
-          CRATE_FLAGS=""
-          for c in ${{ inputs.target-crates }}; do CRATE_FLAGS="$CRATE_FLAGS -p $c"; done
-          cargo test $CRATE_FLAGS --lib
-          cargo test $CRATE_FLAGS --tests
-
   windows:
     name: 'windows (build + test)'
-    needs: [macos]
-    if: ${{ always() && inputs.run-windows && needs.macos.result != 'failure' && (!contains(github.event.pull_request.labels.*.name, 'ci:macos-only') || contains(github.event.pull_request.labels.*.name, 'ci:all')) }}
+    needs: [linux]
+    # always() so Windows still evaluates when linux was SKIPPED (e.g.
+    # run-linux=false), while result != 'failure' keeps it from burning
+    # 2x-rate minutes on a tree Linux already proved broken.
+    if: ${{ always() && inputs.run-windows && needs.linux.result != 'failure' && (!contains(github.event.pull_request.labels.*.name, 'ci:linux-only') || contains(github.event.pull_request.labels.*.name, 'ci:all')) }}
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
@@ -388,33 +363,6 @@ jobs:
       - uses: actions/upload-artifact@v7
         with: { name: 'linux-x86_64-${{ inputs.target-name }}', path: '${{ inputs.checkout-path }}/target/release/', retention-days: 7 }
 
-  release-macos:
-    if: inputs.build-release
-    needs: [windows, lint]
-    runs-on: ${{ inputs.use-self-hosted-macos && fromJSON('["self-hosted", "macOS"]') || 'macos-latest' }}
-    steps:
-      - uses: actions/checkout@v7
-        with: { repository: '${{ inputs.checkout-repo }}', ref: '${{ inputs.checkout-ref }}', token: '${{ secrets.CHECKOUT_TOKEN }}', path: '${{ inputs.checkout-path }}' }
-      - name: Clone workspace repos
-        if: inputs.clone-repos != ''
-        run: |
-          TOKEN=${{ secrets.CHECKOUT_TOKEN }}
-          for rd in ${{ inputs.clone-repos }}; do
-            r="${rd%%:*}"; d="${rd##*:}"
-            [ ! -d "$d" ] && git clone --depth 1 "https://x-access-token:${TOKEN}@github.com/${r}.git" "$d" || echo "WARN: failed to clone ${r} into ${d}"
-          done
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with: { workspaces: '${{ inputs.checkout-path }}' }
-      - name: Build release binaries
-        working-directory: ${{ inputs.checkout-path }}
-        run: |
-          CRATES="${{ inputs.release-binaries }}"
-          [ -z "$CRATES" ] && CRATES="${{ inputs.target-crates }}"
-          for c in $CRATES; do cargo build --release -p "$c"; done
-      - uses: actions/upload-artifact@v7
-        with: { name: 'macos-arm64-${{ inputs.target-name }}', path: '${{ inputs.checkout-path }}/target/release/', retention-days: 7 }
-
   release-windows:
     if: inputs.build-release
     needs: [windows, lint]
@@ -451,7 +399,6 @@ jobs:
     if: always()
     needs:
       - linux
-      - macos
       - windows
       - check-wasm
       - lint
@@ -462,7 +409,6 @@ jobs:
       - run: |
           echo "=== CI Results for ${{ inputs.target-name }} ==="
           echo "  Linux:   ${{ needs.linux.result }}"
-          echo "  macOS:   ${{ needs.macos.result }}"
           echo "  Windows: ${{ needs.windows.result }}"
           echo "  WASM:    ${{ needs.check-wasm.result }}"
           echo "  Lint:    ${{ needs.lint.result }}"
@@ -470,7 +416,6 @@ jobs:
           echo "  Security audit: ${{ needs.security-audit.result }}"
 
           [ "${{ needs.linux.result }}" = "failure" ] && echo "LINUX BUILD/TEST FAILED" && exit 1
-          [ "${{ needs.macos.result }}" = "failure" ] && echo "MACOS BUILD/TEST FAILED" && exit 1
           [ "${{ needs.windows.result }}" = "failure" ] && echo "WINDOWS BUILD/TEST FAILED" && exit 1
           [ "${{ needs.check-wasm.result }}" = "failure" ] && echo "WASM BUILD FAILED" && exit 1
           [ "${{ needs.lint.result }}" = "failure" ] && echo "WARNING: Lint failed (non-blocking)"
