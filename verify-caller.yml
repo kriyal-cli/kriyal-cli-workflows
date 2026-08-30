@@ -4,24 +4,51 @@
 # respects that marker and never touches the file again). To customise inputs
 # for one repo, opt out and keep your own copy.
 #
+# ── DISPATCH-ONLY AS OF 2026-08-30 ───────────────────────────────────────
+#
+# This file used to fire on `push: [main]`, on every `pull_request`, and on a
+# nightly `schedule`. It is synced into ~25 Rust repos across every tracked
+# org, so those three triggers were not three builds - they were three builds
+# PER REPO, firing on ordinary development activity, with nothing anywhere
+# deciding whether the fleet had capacity for them.
+#
+# Builds are now requested EXPLICITLY from the CI dashboard, which is the
+# only component with fleet-wide visibility: it holds the per-device queue
+# (one build at a time per device), it groups related PRs across orgs into a
+# single build, and it decides hosted-vs-self-hosted against live Actions
+# billing. None of that can be decided from inside a single repo reacting to
+# its own push event, which is why the repo-local triggers had to go rather
+# than be narrowed with path filters.
+#
+# `workflow_dispatch` is therefore the ONLY trigger. Re-adding push or
+# pull_request here silently reintroduces uncoordinated fleet-wide builds in
+# every synced repo at once - if a repo genuinely needs its own trigger, opt
+# it out with `# kriyal-sync: off` and own the file.
+#
 # Tiers (see kriyal-cli/kriyal-cli-workflows/.github/workflows/reusable-verify.yml):
-#   push          -> fast    fmt + clippy + artefact audit + dependency hygiene
-#   pull_request  -> deep    + Kani proofs (per crate carrying harnesses) + geiger, cache-gated
-#   schedule      -> nightly  deep, cache disabled
+#   fast     fmt + clippy + artefact audit + dependency hygiene
+#   deep     + Kani proofs (per crate carrying harnesses) + geiger, cache-gated
+#   nightly  deep, cache disabled
 name: Verify
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-  schedule:
-    - cron: "17 4 * * *"
   workflow_dispatch:
     inputs:
       tier:
         description: "fast | deep | nightly"
         type: string
         default: deep
+      runs-on:
+        # Passed EXPLICITLY by the dispatcher instead of read from
+        # `vars.CI_RUNNER`. That org variable was a fleet-wide switch any
+        # scheduled job could flip - kriyal-server/kriyal-docker-server's
+        # runner-router.yml rewrote it every 30 minutes - which meant the
+        # runner every synced repo used could change under us with no queue
+        # entry, no record, and no way to attribute a build to a decision.
+        # An input is visible in the run that used it.
+        description: "Runner to use, chosen by the dashboard's billing-aware router"
+        type: string
+        default: ubuntu-latest
 
 permissions:
   contents: read
@@ -30,14 +57,8 @@ jobs:
   verify:
     uses: kriyal-cli/kriyal-cli-workflows/.github/workflows/reusable-verify.yml@main
     with:
-      tier: >-
-        ${{ github.event_name == 'schedule' && 'nightly'
-            || github.event_name == 'workflow_dispatch' && inputs.tier
-            || github.event_name == 'pull_request' && 'deep'
-            || 'fast' }}
-      # Hosted by default; set the org/repo variable CI_RUNNER (e.g.
-      # "self-hosted") to move every synced repo onto your own runners at once.
-      runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+      tier: ${{ inputs.tier }}
+      runs-on: ${{ inputs.runs-on }}
       clippy-args: >-
         -D warnings -D clippy::correctness -D clippy::suspicious
         -D clippy::perf -D clippy::complexity
