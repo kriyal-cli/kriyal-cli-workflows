@@ -8,8 +8,11 @@
 #   * RUST ONLY — a repo with no root Cargo.toml gets nothing. Pushing a Rust
 #     verify workflow into a docs or JS repo would hand it a permanently red
 #     Actions tab, which teaches people to ignore red.
-#   * OPT-OUT IS HONOURED — if the existing file contains `kriyal-sync: off`,
-#     the repo has taken ownership and the sync never touches it again.
+#   * OPT-OUT IS HONOURED — if the existing file has a LINE that is exactly the
+#     opt-out marker (see the anchored check below), the repo has taken
+#     ownership and the sync never touches it again. Prose merely MENTIONING
+#     the marker does not count; that distinction is load-bearing, because the
+#     template documents the marker in its own header.
 name: Sync verify workflow to tracked repos
 
 on:
@@ -79,7 +82,21 @@ jobs:
                 existing_content=$(gh api "repos/${repo}/contents/${TARGET}?ref=${branch}" --jq '.content' 2>/dev/null | tr -d '\n') || existing_content=""
                 existing_sha=$(gh api "repos/${repo}/contents/${TARGET}?ref=${branch}" --jq '.sha' 2>/dev/null) || existing_sha=""
 
-                if [ -n "$existing_content" ] && echo "$existing_content" | base64 -d 2>/dev/null | grep -q 'kriyal-sync: off'; then
+                # ANCHORED, and it has to stay that way. This was an
+                # unanchored `grep -q 'kriyal-sync: off'`, and the template
+                # this sync writes explains the opt-out mechanism in its own
+                # header - so every file the sync produced contained the
+                # literal marker text and therefore opted ITSELF out. The
+                # sync worked exactly once (2026-08-24, when the files did
+                # not exist yet) and from the next run on reported
+                # "OPTED OUT" for all 29 repos while changing nothing. It
+                # looked like a working, well-behaved sync in the logs.
+                #
+                # Matching only a line that IS the marker - start of line,
+                # optional leading hash/space, nothing after "off" - keeps
+                # prose that MENTIONS the marker from acting as one.
+                if [ -n "$existing_content" ] && echo "$existing_content" | base64 -d 2>/dev/null \
+                     | grep -qE '^[[:space:]]*#?[[:space:]]*kriyal-sync:[[:space:]]*off[[:space:]]*$'; then
                   OPTED_OUT=$((OPTED_OUT+1)); echo "OPTED OUT: ${repo}"; continue
                 fi
                 if [ "$existing_content" = "$TEMPLATE_B64" ]; then
