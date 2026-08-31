@@ -210,9 +210,80 @@ jobs:
           fresh_clone "$CO_REPO" "$CO_PATH" "$CO_REF"
           echo "checked out ${CO_REPO}${CO_REF:+@${CO_REF}} -> ${CO_PATH}"
 
-          # Sibling repos the workspace path-depends on. A failure here is
-          # fatal, unlike the previous loop which logged WARN and carried on
-          # into a build that could only fail later, further from the cause.
+          # ── SIBLING REPOS ────────────────────────────────────────────
+          #
+          # A Rust workspace here path-depends on crates in OTHER repos, as
+          # relative paths: kriyal-base/common has 12 manifests pointing at
+          # `../../../build`. Cargo resolves those against the filesystem, so
+          # a lone checkout cannot build - it dies with "The system cannot
+          # find the path specified. (os error 3)" AFTER every toolchain step
+          # has passed, which is how it presented on the first real dispatches
+          # to kriyalci1 (runs 33365628968 and 33365891378).
+          #
+          # When the caller did not say which siblings to clone, work it out
+          # rather than failing. The list is derived from the checked-out
+          # Cargo.toml files themselves, so it cannot drift from the code the
+          # way a hand-maintained per-repo list does: add a path-dep and the
+          # next build clones what it needs, with nothing to remember.
+          #
+          # A relative path names a DIRECTORY, not a repository, and nothing
+          # in the tree says which repo `../../../build` came from. That is
+          # the single question workspace-repos.map answers, and it only
+          # changes when a REPO is added or moved - rarely and visibly - not
+          # when code changes.
+          if [ -z "${CO_CLONES// /}" ]; then
+            echo "clone-repos not supplied - deriving siblings from Cargo.toml path-deps"
+            _mapdir=$(mktemp -d)
+            if git clone --depth 1 "$(url_for kriyal-cli/kriyal-cli-workflows)" "$_mapdir/wf" >/dev/null 2>&1; then
+              _map="$_mapdir/wf/workspace-repos.map"
+              # A path-dep lives in ANOTHER repo only if it ESCAPES the
+              # checkout root. That is decided by comparing how many `../`
+              # the path uses against how deep the manifest sits below the
+              # root - NOT by stripping the `../` and taking the name.
+              #
+              # The naive form is wrong in a way that would show up on every
+              # build: kriyal-base/common reaches its own crates/base and
+              # crates/spec-generated with `../..`, so it would try to resolve
+              # two repos that do not exist and warn each time. Verified
+              # against the real trees - common derives exactly {build,
+              # common-device} and artifacts {build, common, common-device,
+              # vendor}, which matches their actual failures.
+              _names=$(
+                while IFS= read -r _m; do
+                  _dir=$(dirname "$_m")
+                  _rel="${_dir#"$CO_PATH"}"; _rel="${_rel#/}"
+                  if [ -z "$_rel" ]; then _depth=0; else _depth=$(awk -F/ '{print NF}' <<<"$_rel"); fi
+                  while IFS= read -r _p; do
+                    [ -n "$_p" ] || continue
+                    case "$_p" in ../*) ;; *) continue ;; esac
+                    _ups=$(grep -o '\.\./' <<<"$_p" | wc -l | tr -d ' ')
+                    [ "$_ups" -le "$_depth" ] && continue
+                    sed -E 's#^(\.\./)+##' <<<"$_p" | cut -d/ -f1
+                  done < <(grep -oE 'path[[:space:]]*=[[:space:]]*"[^"]+"' "$_m" 2>/dev/null |
+                           sed -E 's/.*"([^"]+)"/\1/')
+                done < <(find "$CO_PATH" -name Cargo.toml -not -path '*/target/*') | sort -u
+              )
+              for _n in $_names; do
+                [ -n "$_n" ] || continue
+                [ "$_n" = "$CO_PATH" ] && continue
+                [ -d "$_n" ] && continue
+                _repo=$(awk -v n="$_n" '$1 == n { print $2; exit }' "$_map")
+                if [ -z "$_repo" ]; then
+                  echo "::warning::path-dep directory '$_n' is not in workspace-repos.map - not cloned. Add it there if this build needs it."
+                  continue
+                fi
+                CO_CLONES="$CO_CLONES $_repo:$_n"
+              done
+              echo "derived clone-repos:${CO_CLONES:-<none>}"
+            else
+              echo "::warning::could not fetch workspace-repos.map - no siblings derived"
+            fi
+            rm -rf -- "$_mapdir"
+          fi
+
+          # A failure here is fatal, unlike the loop this replaced, which
+          # logged WARN and carried on into a build that could only fail
+          # later and further from the cause.
           for rd in $CO_CLONES; do
             [ -n "$rd" ] || continue
             r="${rd%%:*}"; d="${rd##*:}"
@@ -315,9 +386,80 @@ jobs:
           fresh_clone "$CO_REPO" "$CO_PATH" "$CO_REF"
           echo "checked out ${CO_REPO}${CO_REF:+@${CO_REF}} -> ${CO_PATH}"
 
-          # Sibling repos the workspace path-depends on. A failure here is
-          # fatal, unlike the previous loop which logged WARN and carried on
-          # into a build that could only fail later, further from the cause.
+          # ── SIBLING REPOS ────────────────────────────────────────────
+          #
+          # A Rust workspace here path-depends on crates in OTHER repos, as
+          # relative paths: kriyal-base/common has 12 manifests pointing at
+          # `../../../build`. Cargo resolves those against the filesystem, so
+          # a lone checkout cannot build - it dies with "The system cannot
+          # find the path specified. (os error 3)" AFTER every toolchain step
+          # has passed, which is how it presented on the first real dispatches
+          # to kriyalci1 (runs 33365628968 and 33365891378).
+          #
+          # When the caller did not say which siblings to clone, work it out
+          # rather than failing. The list is derived from the checked-out
+          # Cargo.toml files themselves, so it cannot drift from the code the
+          # way a hand-maintained per-repo list does: add a path-dep and the
+          # next build clones what it needs, with nothing to remember.
+          #
+          # A relative path names a DIRECTORY, not a repository, and nothing
+          # in the tree says which repo `../../../build` came from. That is
+          # the single question workspace-repos.map answers, and it only
+          # changes when a REPO is added or moved - rarely and visibly - not
+          # when code changes.
+          if [ -z "${CO_CLONES// /}" ]; then
+            echo "clone-repos not supplied - deriving siblings from Cargo.toml path-deps"
+            _mapdir=$(mktemp -d)
+            if git clone --depth 1 "$(url_for kriyal-cli/kriyal-cli-workflows)" "$_mapdir/wf" >/dev/null 2>&1; then
+              _map="$_mapdir/wf/workspace-repos.map"
+              # A path-dep lives in ANOTHER repo only if it ESCAPES the
+              # checkout root. That is decided by comparing how many `../`
+              # the path uses against how deep the manifest sits below the
+              # root - NOT by stripping the `../` and taking the name.
+              #
+              # The naive form is wrong in a way that would show up on every
+              # build: kriyal-base/common reaches its own crates/base and
+              # crates/spec-generated with `../..`, so it would try to resolve
+              # two repos that do not exist and warn each time. Verified
+              # against the real trees - common derives exactly {build,
+              # common-device} and artifacts {build, common, common-device,
+              # vendor}, which matches their actual failures.
+              _names=$(
+                while IFS= read -r _m; do
+                  _dir=$(dirname "$_m")
+                  _rel="${_dir#"$CO_PATH"}"; _rel="${_rel#/}"
+                  if [ -z "$_rel" ]; then _depth=0; else _depth=$(awk -F/ '{print NF}' <<<"$_rel"); fi
+                  while IFS= read -r _p; do
+                    [ -n "$_p" ] || continue
+                    case "$_p" in ../*) ;; *) continue ;; esac
+                    _ups=$(grep -o '\.\./' <<<"$_p" | wc -l | tr -d ' ')
+                    [ "$_ups" -le "$_depth" ] && continue
+                    sed -E 's#^(\.\./)+##' <<<"$_p" | cut -d/ -f1
+                  done < <(grep -oE 'path[[:space:]]*=[[:space:]]*"[^"]+"' "$_m" 2>/dev/null |
+                           sed -E 's/.*"([^"]+)"/\1/')
+                done < <(find "$CO_PATH" -name Cargo.toml -not -path '*/target/*') | sort -u
+              )
+              for _n in $_names; do
+                [ -n "$_n" ] || continue
+                [ "$_n" = "$CO_PATH" ] && continue
+                [ -d "$_n" ] && continue
+                _repo=$(awk -v n="$_n" '$1 == n { print $2; exit }' "$_map")
+                if [ -z "$_repo" ]; then
+                  echo "::warning::path-dep directory '$_n' is not in workspace-repos.map - not cloned. Add it there if this build needs it."
+                  continue
+                fi
+                CO_CLONES="$CO_CLONES $_repo:$_n"
+              done
+              echo "derived clone-repos:${CO_CLONES:-<none>}"
+            else
+              echo "::warning::could not fetch workspace-repos.map - no siblings derived"
+            fi
+            rm -rf -- "$_mapdir"
+          fi
+
+          # A failure here is fatal, unlike the loop this replaced, which
+          # logged WARN and carried on into a build that could only fail
+          # later and further from the cause.
           for rd in $CO_CLONES; do
             [ -n "$rd" ] || continue
             r="${rd%%:*}"; d="${rd##*:}"
@@ -415,9 +557,80 @@ jobs:
           fresh_clone "$CO_REPO" "$CO_PATH" "$CO_REF"
           echo "checked out ${CO_REPO}${CO_REF:+@${CO_REF}} -> ${CO_PATH}"
 
-          # Sibling repos the workspace path-depends on. A failure here is
-          # fatal, unlike the previous loop which logged WARN and carried on
-          # into a build that could only fail later, further from the cause.
+          # ── SIBLING REPOS ────────────────────────────────────────────
+          #
+          # A Rust workspace here path-depends on crates in OTHER repos, as
+          # relative paths: kriyal-base/common has 12 manifests pointing at
+          # `../../../build`. Cargo resolves those against the filesystem, so
+          # a lone checkout cannot build - it dies with "The system cannot
+          # find the path specified. (os error 3)" AFTER every toolchain step
+          # has passed, which is how it presented on the first real dispatches
+          # to kriyalci1 (runs 33365628968 and 33365891378).
+          #
+          # When the caller did not say which siblings to clone, work it out
+          # rather than failing. The list is derived from the checked-out
+          # Cargo.toml files themselves, so it cannot drift from the code the
+          # way a hand-maintained per-repo list does: add a path-dep and the
+          # next build clones what it needs, with nothing to remember.
+          #
+          # A relative path names a DIRECTORY, not a repository, and nothing
+          # in the tree says which repo `../../../build` came from. That is
+          # the single question workspace-repos.map answers, and it only
+          # changes when a REPO is added or moved - rarely and visibly - not
+          # when code changes.
+          if [ -z "${CO_CLONES// /}" ]; then
+            echo "clone-repos not supplied - deriving siblings from Cargo.toml path-deps"
+            _mapdir=$(mktemp -d)
+            if git clone --depth 1 "$(url_for kriyal-cli/kriyal-cli-workflows)" "$_mapdir/wf" >/dev/null 2>&1; then
+              _map="$_mapdir/wf/workspace-repos.map"
+              # A path-dep lives in ANOTHER repo only if it ESCAPES the
+              # checkout root. That is decided by comparing how many `../`
+              # the path uses against how deep the manifest sits below the
+              # root - NOT by stripping the `../` and taking the name.
+              #
+              # The naive form is wrong in a way that would show up on every
+              # build: kriyal-base/common reaches its own crates/base and
+              # crates/spec-generated with `../..`, so it would try to resolve
+              # two repos that do not exist and warn each time. Verified
+              # against the real trees - common derives exactly {build,
+              # common-device} and artifacts {build, common, common-device,
+              # vendor}, which matches their actual failures.
+              _names=$(
+                while IFS= read -r _m; do
+                  _dir=$(dirname "$_m")
+                  _rel="${_dir#"$CO_PATH"}"; _rel="${_rel#/}"
+                  if [ -z "$_rel" ]; then _depth=0; else _depth=$(awk -F/ '{print NF}' <<<"$_rel"); fi
+                  while IFS= read -r _p; do
+                    [ -n "$_p" ] || continue
+                    case "$_p" in ../*) ;; *) continue ;; esac
+                    _ups=$(grep -o '\.\./' <<<"$_p" | wc -l | tr -d ' ')
+                    [ "$_ups" -le "$_depth" ] && continue
+                    sed -E 's#^(\.\./)+##' <<<"$_p" | cut -d/ -f1
+                  done < <(grep -oE 'path[[:space:]]*=[[:space:]]*"[^"]+"' "$_m" 2>/dev/null |
+                           sed -E 's/.*"([^"]+)"/\1/')
+                done < <(find "$CO_PATH" -name Cargo.toml -not -path '*/target/*') | sort -u
+              )
+              for _n in $_names; do
+                [ -n "$_n" ] || continue
+                [ "$_n" = "$CO_PATH" ] && continue
+                [ -d "$_n" ] && continue
+                _repo=$(awk -v n="$_n" '$1 == n { print $2; exit }' "$_map")
+                if [ -z "$_repo" ]; then
+                  echo "::warning::path-dep directory '$_n' is not in workspace-repos.map - not cloned. Add it there if this build needs it."
+                  continue
+                fi
+                CO_CLONES="$CO_CLONES $_repo:$_n"
+              done
+              echo "derived clone-repos:${CO_CLONES:-<none>}"
+            else
+              echo "::warning::could not fetch workspace-repos.map - no siblings derived"
+            fi
+            rm -rf -- "$_mapdir"
+          fi
+
+          # A failure here is fatal, unlike the loop this replaced, which
+          # logged WARN and carried on into a build that could only fail
+          # later and further from the cause.
           for rd in $CO_CLONES; do
             [ -n "$rd" ] || continue
             r="${rd%%:*}"; d="${rd##*:}"
@@ -511,9 +724,80 @@ jobs:
           fresh_clone "$CO_REPO" "$CO_PATH" "$CO_REF"
           echo "checked out ${CO_REPO}${CO_REF:+@${CO_REF}} -> ${CO_PATH}"
 
-          # Sibling repos the workspace path-depends on. A failure here is
-          # fatal, unlike the previous loop which logged WARN and carried on
-          # into a build that could only fail later, further from the cause.
+          # ── SIBLING REPOS ────────────────────────────────────────────
+          #
+          # A Rust workspace here path-depends on crates in OTHER repos, as
+          # relative paths: kriyal-base/common has 12 manifests pointing at
+          # `../../../build`. Cargo resolves those against the filesystem, so
+          # a lone checkout cannot build - it dies with "The system cannot
+          # find the path specified. (os error 3)" AFTER every toolchain step
+          # has passed, which is how it presented on the first real dispatches
+          # to kriyalci1 (runs 33365628968 and 33365891378).
+          #
+          # When the caller did not say which siblings to clone, work it out
+          # rather than failing. The list is derived from the checked-out
+          # Cargo.toml files themselves, so it cannot drift from the code the
+          # way a hand-maintained per-repo list does: add a path-dep and the
+          # next build clones what it needs, with nothing to remember.
+          #
+          # A relative path names a DIRECTORY, not a repository, and nothing
+          # in the tree says which repo `../../../build` came from. That is
+          # the single question workspace-repos.map answers, and it only
+          # changes when a REPO is added or moved - rarely and visibly - not
+          # when code changes.
+          if [ -z "${CO_CLONES// /}" ]; then
+            echo "clone-repos not supplied - deriving siblings from Cargo.toml path-deps"
+            _mapdir=$(mktemp -d)
+            if git clone --depth 1 "$(url_for kriyal-cli/kriyal-cli-workflows)" "$_mapdir/wf" >/dev/null 2>&1; then
+              _map="$_mapdir/wf/workspace-repos.map"
+              # A path-dep lives in ANOTHER repo only if it ESCAPES the
+              # checkout root. That is decided by comparing how many `../`
+              # the path uses against how deep the manifest sits below the
+              # root - NOT by stripping the `../` and taking the name.
+              #
+              # The naive form is wrong in a way that would show up on every
+              # build: kriyal-base/common reaches its own crates/base and
+              # crates/spec-generated with `../..`, so it would try to resolve
+              # two repos that do not exist and warn each time. Verified
+              # against the real trees - common derives exactly {build,
+              # common-device} and artifacts {build, common, common-device,
+              # vendor}, which matches their actual failures.
+              _names=$(
+                while IFS= read -r _m; do
+                  _dir=$(dirname "$_m")
+                  _rel="${_dir#"$CO_PATH"}"; _rel="${_rel#/}"
+                  if [ -z "$_rel" ]; then _depth=0; else _depth=$(awk -F/ '{print NF}' <<<"$_rel"); fi
+                  while IFS= read -r _p; do
+                    [ -n "$_p" ] || continue
+                    case "$_p" in ../*) ;; *) continue ;; esac
+                    _ups=$(grep -o '\.\./' <<<"$_p" | wc -l | tr -d ' ')
+                    [ "$_ups" -le "$_depth" ] && continue
+                    sed -E 's#^(\.\./)+##' <<<"$_p" | cut -d/ -f1
+                  done < <(grep -oE 'path[[:space:]]*=[[:space:]]*"[^"]+"' "$_m" 2>/dev/null |
+                           sed -E 's/.*"([^"]+)"/\1/')
+                done < <(find "$CO_PATH" -name Cargo.toml -not -path '*/target/*') | sort -u
+              )
+              for _n in $_names; do
+                [ -n "$_n" ] || continue
+                [ "$_n" = "$CO_PATH" ] && continue
+                [ -d "$_n" ] && continue
+                _repo=$(awk -v n="$_n" '$1 == n { print $2; exit }' "$_map")
+                if [ -z "$_repo" ]; then
+                  echo "::warning::path-dep directory '$_n' is not in workspace-repos.map - not cloned. Add it there if this build needs it."
+                  continue
+                fi
+                CO_CLONES="$CO_CLONES $_repo:$_n"
+              done
+              echo "derived clone-repos:${CO_CLONES:-<none>}"
+            else
+              echo "::warning::could not fetch workspace-repos.map - no siblings derived"
+            fi
+            rm -rf -- "$_mapdir"
+          fi
+
+          # A failure here is fatal, unlike the loop this replaced, which
+          # logged WARN and carried on into a build that could only fail
+          # later and further from the cause.
           for rd in $CO_CLONES; do
             [ -n "$rd" ] || continue
             r="${rd%%:*}"; d="${rd##*:}"
@@ -613,9 +897,80 @@ jobs:
           fresh_clone "$CO_REPO" "$CO_PATH" "$CO_REF"
           echo "checked out ${CO_REPO}${CO_REF:+@${CO_REF}} -> ${CO_PATH}"
 
-          # Sibling repos the workspace path-depends on. A failure here is
-          # fatal, unlike the previous loop which logged WARN and carried on
-          # into a build that could only fail later, further from the cause.
+          # ── SIBLING REPOS ────────────────────────────────────────────
+          #
+          # A Rust workspace here path-depends on crates in OTHER repos, as
+          # relative paths: kriyal-base/common has 12 manifests pointing at
+          # `../../../build`. Cargo resolves those against the filesystem, so
+          # a lone checkout cannot build - it dies with "The system cannot
+          # find the path specified. (os error 3)" AFTER every toolchain step
+          # has passed, which is how it presented on the first real dispatches
+          # to kriyalci1 (runs 33365628968 and 33365891378).
+          #
+          # When the caller did not say which siblings to clone, work it out
+          # rather than failing. The list is derived from the checked-out
+          # Cargo.toml files themselves, so it cannot drift from the code the
+          # way a hand-maintained per-repo list does: add a path-dep and the
+          # next build clones what it needs, with nothing to remember.
+          #
+          # A relative path names a DIRECTORY, not a repository, and nothing
+          # in the tree says which repo `../../../build` came from. That is
+          # the single question workspace-repos.map answers, and it only
+          # changes when a REPO is added or moved - rarely and visibly - not
+          # when code changes.
+          if [ -z "${CO_CLONES// /}" ]; then
+            echo "clone-repos not supplied - deriving siblings from Cargo.toml path-deps"
+            _mapdir=$(mktemp -d)
+            if git clone --depth 1 "$(url_for kriyal-cli/kriyal-cli-workflows)" "$_mapdir/wf" >/dev/null 2>&1; then
+              _map="$_mapdir/wf/workspace-repos.map"
+              # A path-dep lives in ANOTHER repo only if it ESCAPES the
+              # checkout root. That is decided by comparing how many `../`
+              # the path uses against how deep the manifest sits below the
+              # root - NOT by stripping the `../` and taking the name.
+              #
+              # The naive form is wrong in a way that would show up on every
+              # build: kriyal-base/common reaches its own crates/base and
+              # crates/spec-generated with `../..`, so it would try to resolve
+              # two repos that do not exist and warn each time. Verified
+              # against the real trees - common derives exactly {build,
+              # common-device} and artifacts {build, common, common-device,
+              # vendor}, which matches their actual failures.
+              _names=$(
+                while IFS= read -r _m; do
+                  _dir=$(dirname "$_m")
+                  _rel="${_dir#"$CO_PATH"}"; _rel="${_rel#/}"
+                  if [ -z "$_rel" ]; then _depth=0; else _depth=$(awk -F/ '{print NF}' <<<"$_rel"); fi
+                  while IFS= read -r _p; do
+                    [ -n "$_p" ] || continue
+                    case "$_p" in ../*) ;; *) continue ;; esac
+                    _ups=$(grep -o '\.\./' <<<"$_p" | wc -l | tr -d ' ')
+                    [ "$_ups" -le "$_depth" ] && continue
+                    sed -E 's#^(\.\./)+##' <<<"$_p" | cut -d/ -f1
+                  done < <(grep -oE 'path[[:space:]]*=[[:space:]]*"[^"]+"' "$_m" 2>/dev/null |
+                           sed -E 's/.*"([^"]+)"/\1/')
+                done < <(find "$CO_PATH" -name Cargo.toml -not -path '*/target/*') | sort -u
+              )
+              for _n in $_names; do
+                [ -n "$_n" ] || continue
+                [ "$_n" = "$CO_PATH" ] && continue
+                [ -d "$_n" ] && continue
+                _repo=$(awk -v n="$_n" '$1 == n { print $2; exit }' "$_map")
+                if [ -z "$_repo" ]; then
+                  echo "::warning::path-dep directory '$_n' is not in workspace-repos.map - not cloned. Add it there if this build needs it."
+                  continue
+                fi
+                CO_CLONES="$CO_CLONES $_repo:$_n"
+              done
+              echo "derived clone-repos:${CO_CLONES:-<none>}"
+            else
+              echo "::warning::could not fetch workspace-repos.map - no siblings derived"
+            fi
+            rm -rf -- "$_mapdir"
+          fi
+
+          # A failure here is fatal, unlike the loop this replaced, which
+          # logged WARN and carried on into a build that could only fail
+          # later and further from the cause.
           for rd in $CO_CLONES; do
             [ -n "$rd" ] || continue
             r="${rd%%:*}"; d="${rd##*:}"
@@ -716,9 +1071,80 @@ jobs:
           fresh_clone "$CO_REPO" "$CO_PATH" "$CO_REF"
           echo "checked out ${CO_REPO}${CO_REF:+@${CO_REF}} -> ${CO_PATH}"
 
-          # Sibling repos the workspace path-depends on. A failure here is
-          # fatal, unlike the previous loop which logged WARN and carried on
-          # into a build that could only fail later, further from the cause.
+          # ── SIBLING REPOS ────────────────────────────────────────────
+          #
+          # A Rust workspace here path-depends on crates in OTHER repos, as
+          # relative paths: kriyal-base/common has 12 manifests pointing at
+          # `../../../build`. Cargo resolves those against the filesystem, so
+          # a lone checkout cannot build - it dies with "The system cannot
+          # find the path specified. (os error 3)" AFTER every toolchain step
+          # has passed, which is how it presented on the first real dispatches
+          # to kriyalci1 (runs 33365628968 and 33365891378).
+          #
+          # When the caller did not say which siblings to clone, work it out
+          # rather than failing. The list is derived from the checked-out
+          # Cargo.toml files themselves, so it cannot drift from the code the
+          # way a hand-maintained per-repo list does: add a path-dep and the
+          # next build clones what it needs, with nothing to remember.
+          #
+          # A relative path names a DIRECTORY, not a repository, and nothing
+          # in the tree says which repo `../../../build` came from. That is
+          # the single question workspace-repos.map answers, and it only
+          # changes when a REPO is added or moved - rarely and visibly - not
+          # when code changes.
+          if [ -z "${CO_CLONES// /}" ]; then
+            echo "clone-repos not supplied - deriving siblings from Cargo.toml path-deps"
+            _mapdir=$(mktemp -d)
+            if git clone --depth 1 "$(url_for kriyal-cli/kriyal-cli-workflows)" "$_mapdir/wf" >/dev/null 2>&1; then
+              _map="$_mapdir/wf/workspace-repos.map"
+              # A path-dep lives in ANOTHER repo only if it ESCAPES the
+              # checkout root. That is decided by comparing how many `../`
+              # the path uses against how deep the manifest sits below the
+              # root - NOT by stripping the `../` and taking the name.
+              #
+              # The naive form is wrong in a way that would show up on every
+              # build: kriyal-base/common reaches its own crates/base and
+              # crates/spec-generated with `../..`, so it would try to resolve
+              # two repos that do not exist and warn each time. Verified
+              # against the real trees - common derives exactly {build,
+              # common-device} and artifacts {build, common, common-device,
+              # vendor}, which matches their actual failures.
+              _names=$(
+                while IFS= read -r _m; do
+                  _dir=$(dirname "$_m")
+                  _rel="${_dir#"$CO_PATH"}"; _rel="${_rel#/}"
+                  if [ -z "$_rel" ]; then _depth=0; else _depth=$(awk -F/ '{print NF}' <<<"$_rel"); fi
+                  while IFS= read -r _p; do
+                    [ -n "$_p" ] || continue
+                    case "$_p" in ../*) ;; *) continue ;; esac
+                    _ups=$(grep -o '\.\./' <<<"$_p" | wc -l | tr -d ' ')
+                    [ "$_ups" -le "$_depth" ] && continue
+                    sed -E 's#^(\.\./)+##' <<<"$_p" | cut -d/ -f1
+                  done < <(grep -oE 'path[[:space:]]*=[[:space:]]*"[^"]+"' "$_m" 2>/dev/null |
+                           sed -E 's/.*"([^"]+)"/\1/')
+                done < <(find "$CO_PATH" -name Cargo.toml -not -path '*/target/*') | sort -u
+              )
+              for _n in $_names; do
+                [ -n "$_n" ] || continue
+                [ "$_n" = "$CO_PATH" ] && continue
+                [ -d "$_n" ] && continue
+                _repo=$(awk -v n="$_n" '$1 == n { print $2; exit }' "$_map")
+                if [ -z "$_repo" ]; then
+                  echo "::warning::path-dep directory '$_n' is not in workspace-repos.map - not cloned. Add it there if this build needs it."
+                  continue
+                fi
+                CO_CLONES="$CO_CLONES $_repo:$_n"
+              done
+              echo "derived clone-repos:${CO_CLONES:-<none>}"
+            else
+              echo "::warning::could not fetch workspace-repos.map - no siblings derived"
+            fi
+            rm -rf -- "$_mapdir"
+          fi
+
+          # A failure here is fatal, unlike the loop this replaced, which
+          # logged WARN and carried on into a build that could only fail
+          # later and further from the cause.
           for rd in $CO_CLONES; do
             [ -n "$rd" ] || continue
             r="${rd%%:*}"; d="${rd##*:}"
@@ -809,9 +1235,80 @@ jobs:
           fresh_clone "$CO_REPO" "$CO_PATH" "$CO_REF"
           echo "checked out ${CO_REPO}${CO_REF:+@${CO_REF}} -> ${CO_PATH}"
 
-          # Sibling repos the workspace path-depends on. A failure here is
-          # fatal, unlike the previous loop which logged WARN and carried on
-          # into a build that could only fail later, further from the cause.
+          # ── SIBLING REPOS ────────────────────────────────────────────
+          #
+          # A Rust workspace here path-depends on crates in OTHER repos, as
+          # relative paths: kriyal-base/common has 12 manifests pointing at
+          # `../../../build`. Cargo resolves those against the filesystem, so
+          # a lone checkout cannot build - it dies with "The system cannot
+          # find the path specified. (os error 3)" AFTER every toolchain step
+          # has passed, which is how it presented on the first real dispatches
+          # to kriyalci1 (runs 33365628968 and 33365891378).
+          #
+          # When the caller did not say which siblings to clone, work it out
+          # rather than failing. The list is derived from the checked-out
+          # Cargo.toml files themselves, so it cannot drift from the code the
+          # way a hand-maintained per-repo list does: add a path-dep and the
+          # next build clones what it needs, with nothing to remember.
+          #
+          # A relative path names a DIRECTORY, not a repository, and nothing
+          # in the tree says which repo `../../../build` came from. That is
+          # the single question workspace-repos.map answers, and it only
+          # changes when a REPO is added or moved - rarely and visibly - not
+          # when code changes.
+          if [ -z "${CO_CLONES// /}" ]; then
+            echo "clone-repos not supplied - deriving siblings from Cargo.toml path-deps"
+            _mapdir=$(mktemp -d)
+            if git clone --depth 1 "$(url_for kriyal-cli/kriyal-cli-workflows)" "$_mapdir/wf" >/dev/null 2>&1; then
+              _map="$_mapdir/wf/workspace-repos.map"
+              # A path-dep lives in ANOTHER repo only if it ESCAPES the
+              # checkout root. That is decided by comparing how many `../`
+              # the path uses against how deep the manifest sits below the
+              # root - NOT by stripping the `../` and taking the name.
+              #
+              # The naive form is wrong in a way that would show up on every
+              # build: kriyal-base/common reaches its own crates/base and
+              # crates/spec-generated with `../..`, so it would try to resolve
+              # two repos that do not exist and warn each time. Verified
+              # against the real trees - common derives exactly {build,
+              # common-device} and artifacts {build, common, common-device,
+              # vendor}, which matches their actual failures.
+              _names=$(
+                while IFS= read -r _m; do
+                  _dir=$(dirname "$_m")
+                  _rel="${_dir#"$CO_PATH"}"; _rel="${_rel#/}"
+                  if [ -z "$_rel" ]; then _depth=0; else _depth=$(awk -F/ '{print NF}' <<<"$_rel"); fi
+                  while IFS= read -r _p; do
+                    [ -n "$_p" ] || continue
+                    case "$_p" in ../*) ;; *) continue ;; esac
+                    _ups=$(grep -o '\.\./' <<<"$_p" | wc -l | tr -d ' ')
+                    [ "$_ups" -le "$_depth" ] && continue
+                    sed -E 's#^(\.\./)+##' <<<"$_p" | cut -d/ -f1
+                  done < <(grep -oE 'path[[:space:]]*=[[:space:]]*"[^"]+"' "$_m" 2>/dev/null |
+                           sed -E 's/.*"([^"]+)"/\1/')
+                done < <(find "$CO_PATH" -name Cargo.toml -not -path '*/target/*') | sort -u
+              )
+              for _n in $_names; do
+                [ -n "$_n" ] || continue
+                [ "$_n" = "$CO_PATH" ] && continue
+                [ -d "$_n" ] && continue
+                _repo=$(awk -v n="$_n" '$1 == n { print $2; exit }' "$_map")
+                if [ -z "$_repo" ]; then
+                  echo "::warning::path-dep directory '$_n' is not in workspace-repos.map - not cloned. Add it there if this build needs it."
+                  continue
+                fi
+                CO_CLONES="$CO_CLONES $_repo:$_n"
+              done
+              echo "derived clone-repos:${CO_CLONES:-<none>}"
+            else
+              echo "::warning::could not fetch workspace-repos.map - no siblings derived"
+            fi
+            rm -rf -- "$_mapdir"
+          fi
+
+          # A failure here is fatal, unlike the loop this replaced, which
+          # logged WARN and carried on into a build that could only fail
+          # later and further from the cause.
           for rd in $CO_CLONES; do
             [ -n "$rd" ] || continue
             r="${rd%%:*}"; d="${rd##*:}"
@@ -902,9 +1399,80 @@ jobs:
           fresh_clone "$CO_REPO" "$CO_PATH" "$CO_REF"
           echo "checked out ${CO_REPO}${CO_REF:+@${CO_REF}} -> ${CO_PATH}"
 
-          # Sibling repos the workspace path-depends on. A failure here is
-          # fatal, unlike the previous loop which logged WARN and carried on
-          # into a build that could only fail later, further from the cause.
+          # ── SIBLING REPOS ────────────────────────────────────────────
+          #
+          # A Rust workspace here path-depends on crates in OTHER repos, as
+          # relative paths: kriyal-base/common has 12 manifests pointing at
+          # `../../../build`. Cargo resolves those against the filesystem, so
+          # a lone checkout cannot build - it dies with "The system cannot
+          # find the path specified. (os error 3)" AFTER every toolchain step
+          # has passed, which is how it presented on the first real dispatches
+          # to kriyalci1 (runs 33365628968 and 33365891378).
+          #
+          # When the caller did not say which siblings to clone, work it out
+          # rather than failing. The list is derived from the checked-out
+          # Cargo.toml files themselves, so it cannot drift from the code the
+          # way a hand-maintained per-repo list does: add a path-dep and the
+          # next build clones what it needs, with nothing to remember.
+          #
+          # A relative path names a DIRECTORY, not a repository, and nothing
+          # in the tree says which repo `../../../build` came from. That is
+          # the single question workspace-repos.map answers, and it only
+          # changes when a REPO is added or moved - rarely and visibly - not
+          # when code changes.
+          if [ -z "${CO_CLONES// /}" ]; then
+            echo "clone-repos not supplied - deriving siblings from Cargo.toml path-deps"
+            _mapdir=$(mktemp -d)
+            if git clone --depth 1 "$(url_for kriyal-cli/kriyal-cli-workflows)" "$_mapdir/wf" >/dev/null 2>&1; then
+              _map="$_mapdir/wf/workspace-repos.map"
+              # A path-dep lives in ANOTHER repo only if it ESCAPES the
+              # checkout root. That is decided by comparing how many `../`
+              # the path uses against how deep the manifest sits below the
+              # root - NOT by stripping the `../` and taking the name.
+              #
+              # The naive form is wrong in a way that would show up on every
+              # build: kriyal-base/common reaches its own crates/base and
+              # crates/spec-generated with `../..`, so it would try to resolve
+              # two repos that do not exist and warn each time. Verified
+              # against the real trees - common derives exactly {build,
+              # common-device} and artifacts {build, common, common-device,
+              # vendor}, which matches their actual failures.
+              _names=$(
+                while IFS= read -r _m; do
+                  _dir=$(dirname "$_m")
+                  _rel="${_dir#"$CO_PATH"}"; _rel="${_rel#/}"
+                  if [ -z "$_rel" ]; then _depth=0; else _depth=$(awk -F/ '{print NF}' <<<"$_rel"); fi
+                  while IFS= read -r _p; do
+                    [ -n "$_p" ] || continue
+                    case "$_p" in ../*) ;; *) continue ;; esac
+                    _ups=$(grep -o '\.\./' <<<"$_p" | wc -l | tr -d ' ')
+                    [ "$_ups" -le "$_depth" ] && continue
+                    sed -E 's#^(\.\./)+##' <<<"$_p" | cut -d/ -f1
+                  done < <(grep -oE 'path[[:space:]]*=[[:space:]]*"[^"]+"' "$_m" 2>/dev/null |
+                           sed -E 's/.*"([^"]+)"/\1/')
+                done < <(find "$CO_PATH" -name Cargo.toml -not -path '*/target/*') | sort -u
+              )
+              for _n in $_names; do
+                [ -n "$_n" ] || continue
+                [ "$_n" = "$CO_PATH" ] && continue
+                [ -d "$_n" ] && continue
+                _repo=$(awk -v n="$_n" '$1 == n { print $2; exit }' "$_map")
+                if [ -z "$_repo" ]; then
+                  echo "::warning::path-dep directory '$_n' is not in workspace-repos.map - not cloned. Add it there if this build needs it."
+                  continue
+                fi
+                CO_CLONES="$CO_CLONES $_repo:$_n"
+              done
+              echo "derived clone-repos:${CO_CLONES:-<none>}"
+            else
+              echo "::warning::could not fetch workspace-repos.map - no siblings derived"
+            fi
+            rm -rf -- "$_mapdir"
+          fi
+
+          # A failure here is fatal, unlike the loop this replaced, which
+          # logged WARN and carried on into a build that could only fail
+          # later and further from the cause.
           for rd in $CO_CLONES; do
             [ -n "$rd" ] || continue
             r="${rd%%:*}"; d="${rd##*:}"

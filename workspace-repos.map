@@ -1,0 +1,77 @@
+# Fleet workspace map: local sibling directory name -> owner/repo
+#
+# WHAT THIS SOLVES
+#
+# Rust workspaces in this fleet path-depend on crates in OTHER repos, spelled
+# as relative paths in Cargo.toml:
+#
+#   kriyal-base/common  ->  path = "../../../build/..."          (12 manifests)
+#   kriyal-base/common  ->  path = "../../../common-device/..."
+#   indicnode-resources/artifacts -> crate `base`, in kriyal-base/common
+#
+# A checkout of one repo therefore cannot build on its own: cargo resolves
+# `../../../build` against the filesystem and gets "The system cannot find the
+# path specified. (os error 3)". Measured on the first real dispatches to
+# kriyalci1 (kriyal-base/common run 33365628968, artifacts run 33365891378) -
+# every toolchain step passed and the workspace still could not resolve.
+#
+# A relative path names a DIRECTORY, not a repository, so nothing in the
+# checked-out tree says which repo `../../../build` should have come from.
+# That mapping exists only here.
+#
+# WHY A FLEET-LEVEL FILE RATHER THAN PER-REPO CONFIG
+#
+# The set of siblings a workspace needs is a property of its own Cargo.toml
+# and changes whenever someone adds a path-dep. Hand-maintained lists (a
+# per-repo .github/ci-config.yml, or a table in the dashboard) drift silently
+# from that the moment code changes, and the build then fails in a repo other
+# than the one that changed.
+#
+# So reusable-build.yml DERIVES the sibling list by scanning the checked-out
+# Cargo.toml files, and uses this file only to answer the one question the
+# scan cannot: which repo owns a given directory name. That question changes
+# when a REPO is added or moved - rarely, and visibly - not when code changes.
+#
+# FORMAT
+#
+#   <directory-name> <owner>/<repo>
+#
+# Blank lines and lines beginning with # are ignored. Directory names are the
+# last path element a Cargo.toml path-dep resolves to, which by convention in
+# this fleet equals the repo name.
+#
+# Generated 2026-08-31 from the `origin` remote of every clone in the
+# development workspace, so it reflects what the repos actually are rather
+# than what anyone remembered. Add a line when a new repo joins the fleet.
+
+artifacts             indicnode-resources/artifacts
+build                 kriyal-base/build
+ci-rules              kriyal-cli-private/ci-rules
+claude-agents         kriyal-cli-private/claude-agents
+common                kriyal-base/common
+common-arcl           kriyal-base/common-arcl
+common-contracts      indicnode-restricted/common-contracts
+common-device         kriyal-base/common-device
+cts                   kriyal-cts/cts
+cts-oracle            kriyal-cts/cts-oracle
+dashboards            kriyal-cli-private/dashboards
+device-contracts      kriyal-vendor/device-contracts
+device-cts            kriyal-cts/device-cts
+device-kernels        kriyal-vendor/device-kernels
+device-test-fixtures  kriyal-cts/device-test-fixtures
+docs                  kriyal-base/docs
+fasttext              indicnode-restricted/fasttext
+gh-runner-dashboard   kriyal-cli-private/gh-runner-dashboard
+gh-runner-setup       kriyal-cli-private/gh-runner-setup
+graph-manager         kriyal-server/graph-manager
+inference-engine      indicnode-restricted/inference-engine
+input-layer           IndicNode-Kriyal/input-layer
+kernel-ir             kriyal-vendor/kernel-ir
+kriyal-cli-workflows  kriyal-cli/kriyal-cli-workflows
+restricted            indicnode-restricted/restricted
+sprint-board-sync     kriyal-cli-private/sprint-board-sync
+tools                 kriyal-tools/tools
+ui                    IndicNode-Kriyal/ui
+vectordb              IndicNode-Kriyal/vectordb
+vendor                kriyal-vendor/vendor
+vendor-os             kriyal-OSSupport/vendor-os
