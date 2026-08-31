@@ -81,6 +81,29 @@ on:
 permissions:
   contents: read
 
+# ── EVERY `run:` STEP IS BASH, ON EVERY PLATFORM ─────────────────────────
+#
+# GitHub defaults `run:` to PowerShell on Windows runners when no shell is
+# given. Nobody chose that; it is simply the platform default, and it never
+# mattered while this workflow only ever ran on ubuntu-latest.
+#
+# The steps below are bash and always have been - `set -euo pipefail`,
+# `[ -n ... ]`, `IFS= read -r -d ''`, `< <(find ...)` process substitution.
+# Handing those to PowerShell does not degrade gracefully; it fails on the
+# first line. The first dispatch onto a self-hosted Windows runner
+# (kriyal-base/common, 2026-08-31) surfaced it as a PowerShell execution
+# policy error, which is misleading: fixing that policy would only have
+# produced a different failure one line later, because the script was never
+# PowerShell to begin with.
+#
+# Declared ONCE at workflow level rather than per step: a `shell:` on each
+# step is something a new step can forget, and the failure mode of
+# forgetting is a confusing PowerShell parse error rather than an obvious
+# omission. Linux is unaffected - bash was already the default there.
+defaults:
+  run:
+    shell: bash
+
 jobs:
   # ---------------------------------------------------------------- fast tier
   lint:
