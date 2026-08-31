@@ -84,6 +84,16 @@ on:
         required: false
         type: boolean
         default: true
+      linux-runner:
+        description: 'JSON array of runner labels for the Linux jobs, e.g. ["ubuntu-latest"] or ["self-hosted","linux"]. Passed through from build-dispatch.yml, which gets it from gh-runner-dashboard chooseBuildRouting(). Default keeps the previous hosted behaviour for any caller that does not set it.'
+        required: false
+        type: string
+        default: '["ubuntu-latest"]'
+      windows-runner:
+        description: 'JSON array of runner labels for the Windows jobs. Same source and same defaulting as linux-runner.'
+        required: false
+        type: string
+        default: '["windows-latest"]'
       concurrency-group:
         description: 'Concurrency group name - set the same value across callers that share a single-machine runner to serialize their builds'
         required: false
@@ -91,8 +101,8 @@ on:
         default: ''
     secrets:
       CHECKOUT_TOKEN:
-        description: 'Token with read access to checkout-repo and every repo listed in clone-repos'
-        required: true
+        description: 'OPTIONAL. Token with read access to checkout-repo and every repo in clone-repos. Needed only on GitHub-HOSTED runners, which have no credentials of their own. On a self-hosted runner leave it unset: the checkout step below clones over SSH with the key that runner already holds, which is how claude-review.yml has always authenticated. Making this required meant central dispatch could not work at all until somebody minted a cross-org PAT.'
+        required: false
 
 concurrency:
   group: ${{ inputs.concurrency-group != '' && inputs.concurrency-group || format('reusable-build-{0}-{1}', github.repository, github.ref) }}
@@ -134,18 +144,83 @@ jobs:
   linux:
     name: 'linux (build + test)'
     if: inputs.run-linux
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(inputs.linux-runner) }}
     steps:
-      - uses: actions/checkout@v7
-        with: { repository: '${{ inputs.checkout-repo }}', ref: '${{ inputs.checkout-ref }}', token: '${{ secrets.CHECKOUT_TOKEN }}', path: '${{ inputs.checkout-path }}' }
-      - name: Clone workspace repos
-        if: inputs.clone-repos != ''
+      # ── CHECKOUT WITHOUT A MANDATORY CROSS-ORG TOKEN ──────────────────
+      #
+      # This replaced `actions/checkout` + an `x-access-token` clone loop,
+      # both of which required secrets.CHECKOUT_TOKEN. That secret never
+      # existed, so central dispatch could not check out a private repo in
+      # another org and no dispatched build could run at all.
+      #
+      # A self-hosted runner already holds a working SSH key - it is how
+      # claude-review.yml authenticates - so on those runners no secret is
+      # needed. When CHECKOUT_TOKEN *is* set (GitHub-hosted runners, which
+      # carry no credentials of their own) the HTTPS form is used instead.
+      # Same step either way, so the two paths cannot drift apart.
+      - name: Check out the target workspace
         shell: bash
+        env:
+          CHECKOUT_TOKEN: ${{ secrets.CHECKOUT_TOKEN }}
+          CO_REPO: ${{ inputs.checkout-repo }}
+          CO_REF: ${{ inputs.checkout-ref }}
+          CO_PATH: ${{ inputs.checkout-path }}
+          CO_CLONES: ${{ inputs.clone-repos }}
         run: |
-          TOKEN=${{ secrets.CHECKOUT_TOKEN }}
-          for rd in ${{ inputs.clone-repos }}; do
+          set -euo pipefail
+
+          # The destination is emptied before cloning, so a malformed value
+          # here would erase the wrong tree. Absolute paths and traversal are
+          # refused outright rather than normalised.
+          case "$CO_PATH" in
+            "" ) echo "::error::checkout-path is empty"; exit 1 ;;
+            /* ) echo "::error::checkout-path must be relative, got '$CO_PATH'"; exit 1 ;;
+            *..* ) echo "::error::checkout-path must not contain '..', got '$CO_PATH'"; exit 1 ;;
+          esac
+
+          url_for() {
+            if [ -n "${CHECKOUT_TOKEN:-}" ]; then
+              printf 'https://x-access-token:%s@github.com/%s.git' "$CHECKOUT_TOKEN" "$1"
+            else
+              printf 'git@github.com:%s.git' "$1"
+            fi
+          }
+
+          # Mirrors actions/checkout: the destination starts empty every run,
+          # so a build never inherits files from a previous one. Confined to
+          # the job workspace by the guards above, which is the one tree the
+          # runner is allowed to write (see gh-runner-setup clamp-deletes).
+          fresh_clone() {
+            repo="$1"; dest="$2"; ref="${3:-}"
+            rm -rf -- "$dest"
+            mkdir -p -- "$dest"
+            if [ -n "$ref" ]; then
+              git clone --depth 1 --branch "$ref" "$(url_for "$repo")" "$dest"
+            else
+              git clone --depth 1 "$(url_for "$repo")" "$dest"
+            fi
+          }
+
+          if [ -n "${CHECKOUT_TOKEN:-}" ]; then
+            echo "auth: CHECKOUT_TOKEN (https)"
+          else
+            echo "auth: ambient SSH key on this runner (no secret in play)"
+          fi
+
+          fresh_clone "$CO_REPO" "$CO_PATH" "$CO_REF"
+          echo "checked out ${CO_REPO}${CO_REF:+@${CO_REF}} -> ${CO_PATH}"
+
+          # Sibling repos the workspace path-depends on. A failure here is
+          # fatal, unlike the previous loop which logged WARN and carried on
+          # into a build that could only fail later, further from the cause.
+          for rd in $CO_CLONES; do
+            [ -n "$rd" ] || continue
             r="${rd%%:*}"; d="${rd##*:}"
-            [ ! -d "$d" ] && git clone --depth 1 "https://x-access-token:${TOKEN}@github.com/${r}.git" "$d" || echo "WARN: failed to clone ${r} into ${d}"
+            case "$d" in
+              ""|/*|*..*) echo "::error::unsafe clone-repos destination '$d'"; exit 1 ;;
+            esac
+            fresh_clone "$r" "$d"
+            echo "cloned sibling ${r} -> ${d}"
           done
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
@@ -174,18 +249,83 @@ jobs:
     # run-linux=false), while result != 'failure' keeps it from burning
     # 2x-rate minutes on a tree Linux already proved broken.
     if: ${{ always() && inputs.run-windows && needs.linux.result != 'failure' && (!contains(github.event.pull_request.labels.*.name, 'ci:linux-only') || contains(github.event.pull_request.labels.*.name, 'ci:all')) }}
-    runs-on: windows-latest
+    runs-on: ${{ fromJSON(inputs.windows-runner) }}
     steps:
-      - uses: actions/checkout@v7
-        with: { repository: '${{ inputs.checkout-repo }}', ref: '${{ inputs.checkout-ref }}', token: '${{ secrets.CHECKOUT_TOKEN }}', path: '${{ inputs.checkout-path }}' }
-      - name: Clone workspace repos
-        if: inputs.clone-repos != ''
+      # ── CHECKOUT WITHOUT A MANDATORY CROSS-ORG TOKEN ──────────────────
+      #
+      # This replaced `actions/checkout` + an `x-access-token` clone loop,
+      # both of which required secrets.CHECKOUT_TOKEN. That secret never
+      # existed, so central dispatch could not check out a private repo in
+      # another org and no dispatched build could run at all.
+      #
+      # A self-hosted runner already holds a working SSH key - it is how
+      # claude-review.yml authenticates - so on those runners no secret is
+      # needed. When CHECKOUT_TOKEN *is* set (GitHub-hosted runners, which
+      # carry no credentials of their own) the HTTPS form is used instead.
+      # Same step either way, so the two paths cannot drift apart.
+      - name: Check out the target workspace
         shell: bash
+        env:
+          CHECKOUT_TOKEN: ${{ secrets.CHECKOUT_TOKEN }}
+          CO_REPO: ${{ inputs.checkout-repo }}
+          CO_REF: ${{ inputs.checkout-ref }}
+          CO_PATH: ${{ inputs.checkout-path }}
+          CO_CLONES: ${{ inputs.clone-repos }}
         run: |
-          TOKEN=${{ secrets.CHECKOUT_TOKEN }}
-          for rd in ${{ inputs.clone-repos }}; do
+          set -euo pipefail
+
+          # The destination is emptied before cloning, so a malformed value
+          # here would erase the wrong tree. Absolute paths and traversal are
+          # refused outright rather than normalised.
+          case "$CO_PATH" in
+            "" ) echo "::error::checkout-path is empty"; exit 1 ;;
+            /* ) echo "::error::checkout-path must be relative, got '$CO_PATH'"; exit 1 ;;
+            *..* ) echo "::error::checkout-path must not contain '..', got '$CO_PATH'"; exit 1 ;;
+          esac
+
+          url_for() {
+            if [ -n "${CHECKOUT_TOKEN:-}" ]; then
+              printf 'https://x-access-token:%s@github.com/%s.git' "$CHECKOUT_TOKEN" "$1"
+            else
+              printf 'git@github.com:%s.git' "$1"
+            fi
+          }
+
+          # Mirrors actions/checkout: the destination starts empty every run,
+          # so a build never inherits files from a previous one. Confined to
+          # the job workspace by the guards above, which is the one tree the
+          # runner is allowed to write (see gh-runner-setup clamp-deletes).
+          fresh_clone() {
+            repo="$1"; dest="$2"; ref="${3:-}"
+            rm -rf -- "$dest"
+            mkdir -p -- "$dest"
+            if [ -n "$ref" ]; then
+              git clone --depth 1 --branch "$ref" "$(url_for "$repo")" "$dest"
+            else
+              git clone --depth 1 "$(url_for "$repo")" "$dest"
+            fi
+          }
+
+          if [ -n "${CHECKOUT_TOKEN:-}" ]; then
+            echo "auth: CHECKOUT_TOKEN (https)"
+          else
+            echo "auth: ambient SSH key on this runner (no secret in play)"
+          fi
+
+          fresh_clone "$CO_REPO" "$CO_PATH" "$CO_REF"
+          echo "checked out ${CO_REPO}${CO_REF:+@${CO_REF}} -> ${CO_PATH}"
+
+          # Sibling repos the workspace path-depends on. A failure here is
+          # fatal, unlike the previous loop which logged WARN and carried on
+          # into a build that could only fail later, further from the cause.
+          for rd in $CO_CLONES; do
+            [ -n "$rd" ] || continue
             r="${rd%%:*}"; d="${rd##*:}"
-            [ ! -d "$d" ] && git clone --depth 1 "https://x-access-token:${TOKEN}@github.com/${r}.git" "$d" || echo "WARN: failed to clone ${r} into ${d}"
+            case "$d" in
+              ""|/*|*..*) echo "::error::unsafe clone-repos destination '$d'"; exit 1 ;;
+            esac
+            fresh_clone "$r" "$d"
+            echo "cloned sibling ${r} -> ${d}"
           done
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
@@ -209,17 +349,83 @@ jobs:
 
   check-wasm:
     if: inputs.check-wasm
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(inputs.linux-runner) }}
     steps:
-      - uses: actions/checkout@v7
-        with: { repository: '${{ inputs.checkout-repo }}', ref: '${{ inputs.checkout-ref }}', token: '${{ secrets.CHECKOUT_TOKEN }}', path: '${{ inputs.checkout-path }}' }
-      - name: Clone workspace repos
-        if: inputs.clone-repos != ''
+      # ── CHECKOUT WITHOUT A MANDATORY CROSS-ORG TOKEN ──────────────────
+      #
+      # This replaced `actions/checkout` + an `x-access-token` clone loop,
+      # both of which required secrets.CHECKOUT_TOKEN. That secret never
+      # existed, so central dispatch could not check out a private repo in
+      # another org and no dispatched build could run at all.
+      #
+      # A self-hosted runner already holds a working SSH key - it is how
+      # claude-review.yml authenticates - so on those runners no secret is
+      # needed. When CHECKOUT_TOKEN *is* set (GitHub-hosted runners, which
+      # carry no credentials of their own) the HTTPS form is used instead.
+      # Same step either way, so the two paths cannot drift apart.
+      - name: Check out the target workspace
+        shell: bash
+        env:
+          CHECKOUT_TOKEN: ${{ secrets.CHECKOUT_TOKEN }}
+          CO_REPO: ${{ inputs.checkout-repo }}
+          CO_REF: ${{ inputs.checkout-ref }}
+          CO_PATH: ${{ inputs.checkout-path }}
+          CO_CLONES: ${{ inputs.clone-repos }}
         run: |
-          TOKEN=${{ secrets.CHECKOUT_TOKEN }}
-          for rd in ${{ inputs.clone-repos }}; do
+          set -euo pipefail
+
+          # The destination is emptied before cloning, so a malformed value
+          # here would erase the wrong tree. Absolute paths and traversal are
+          # refused outright rather than normalised.
+          case "$CO_PATH" in
+            "" ) echo "::error::checkout-path is empty"; exit 1 ;;
+            /* ) echo "::error::checkout-path must be relative, got '$CO_PATH'"; exit 1 ;;
+            *..* ) echo "::error::checkout-path must not contain '..', got '$CO_PATH'"; exit 1 ;;
+          esac
+
+          url_for() {
+            if [ -n "${CHECKOUT_TOKEN:-}" ]; then
+              printf 'https://x-access-token:%s@github.com/%s.git' "$CHECKOUT_TOKEN" "$1"
+            else
+              printf 'git@github.com:%s.git' "$1"
+            fi
+          }
+
+          # Mirrors actions/checkout: the destination starts empty every run,
+          # so a build never inherits files from a previous one. Confined to
+          # the job workspace by the guards above, which is the one tree the
+          # runner is allowed to write (see gh-runner-setup clamp-deletes).
+          fresh_clone() {
+            repo="$1"; dest="$2"; ref="${3:-}"
+            rm -rf -- "$dest"
+            mkdir -p -- "$dest"
+            if [ -n "$ref" ]; then
+              git clone --depth 1 --branch "$ref" "$(url_for "$repo")" "$dest"
+            else
+              git clone --depth 1 "$(url_for "$repo")" "$dest"
+            fi
+          }
+
+          if [ -n "${CHECKOUT_TOKEN:-}" ]; then
+            echo "auth: CHECKOUT_TOKEN (https)"
+          else
+            echo "auth: ambient SSH key on this runner (no secret in play)"
+          fi
+
+          fresh_clone "$CO_REPO" "$CO_PATH" "$CO_REF"
+          echo "checked out ${CO_REPO}${CO_REF:+@${CO_REF}} -> ${CO_PATH}"
+
+          # Sibling repos the workspace path-depends on. A failure here is
+          # fatal, unlike the previous loop which logged WARN and carried on
+          # into a build that could only fail later, further from the cause.
+          for rd in $CO_CLONES; do
+            [ -n "$rd" ] || continue
             r="${rd%%:*}"; d="${rd##*:}"
-            [ ! -d "$d" ] && git clone --depth 1 "https://x-access-token:${TOKEN}@github.com/${r}.git" "$d" || echo "WARN: failed to clone ${r} into ${d}"
+            case "$d" in
+              ""|/*|*..*) echo "::error::unsafe clone-repos destination '$d'"; exit 1 ;;
+            esac
+            fresh_clone "$r" "$d"
+            echo "cloned sibling ${r} -> ${d}"
           done
       - uses: dtolnay/rust-toolchain@stable
       - run: rustup target add wasm32-unknown-unknown
@@ -238,18 +444,84 @@ jobs:
   lint:
     needs: [windows]
     if: always() && needs.windows.result != 'failure'
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(inputs.linux-runner) }}
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v7
-        with: { repository: '${{ inputs.checkout-repo }}', ref: '${{ inputs.checkout-ref }}', token: '${{ secrets.CHECKOUT_TOKEN }}', path: '${{ inputs.checkout-path }}' }
-      - name: Clone workspace repos
-        if: inputs.clone-repos != ''
+      # ── CHECKOUT WITHOUT A MANDATORY CROSS-ORG TOKEN ──────────────────
+      #
+      # This replaced `actions/checkout` + an `x-access-token` clone loop,
+      # both of which required secrets.CHECKOUT_TOKEN. That secret never
+      # existed, so central dispatch could not check out a private repo in
+      # another org and no dispatched build could run at all.
+      #
+      # A self-hosted runner already holds a working SSH key - it is how
+      # claude-review.yml authenticates - so on those runners no secret is
+      # needed. When CHECKOUT_TOKEN *is* set (GitHub-hosted runners, which
+      # carry no credentials of their own) the HTTPS form is used instead.
+      # Same step either way, so the two paths cannot drift apart.
+      - name: Check out the target workspace
+        shell: bash
+        env:
+          CHECKOUT_TOKEN: ${{ secrets.CHECKOUT_TOKEN }}
+          CO_REPO: ${{ inputs.checkout-repo }}
+          CO_REF: ${{ inputs.checkout-ref }}
+          CO_PATH: ${{ inputs.checkout-path }}
+          CO_CLONES: ${{ inputs.clone-repos }}
         run: |
-          TOKEN=${{ secrets.CHECKOUT_TOKEN }}
-          for rd in ${{ inputs.clone-repos }}; do
+          set -euo pipefail
+
+          # The destination is emptied before cloning, so a malformed value
+          # here would erase the wrong tree. Absolute paths and traversal are
+          # refused outright rather than normalised.
+          case "$CO_PATH" in
+            "" ) echo "::error::checkout-path is empty"; exit 1 ;;
+            /* ) echo "::error::checkout-path must be relative, got '$CO_PATH'"; exit 1 ;;
+            *..* ) echo "::error::checkout-path must not contain '..', got '$CO_PATH'"; exit 1 ;;
+          esac
+
+          url_for() {
+            if [ -n "${CHECKOUT_TOKEN:-}" ]; then
+              printf 'https://x-access-token:%s@github.com/%s.git' "$CHECKOUT_TOKEN" "$1"
+            else
+              printf 'git@github.com:%s.git' "$1"
+            fi
+          }
+
+          # Mirrors actions/checkout: the destination starts empty every run,
+          # so a build never inherits files from a previous one. Confined to
+          # the job workspace by the guards above, which is the one tree the
+          # runner is allowed to write (see gh-runner-setup clamp-deletes).
+          fresh_clone() {
+            repo="$1"; dest="$2"; ref="${3:-}"
+            rm -rf -- "$dest"
+            mkdir -p -- "$dest"
+            if [ -n "$ref" ]; then
+              git clone --depth 1 --branch "$ref" "$(url_for "$repo")" "$dest"
+            else
+              git clone --depth 1 "$(url_for "$repo")" "$dest"
+            fi
+          }
+
+          if [ -n "${CHECKOUT_TOKEN:-}" ]; then
+            echo "auth: CHECKOUT_TOKEN (https)"
+          else
+            echo "auth: ambient SSH key on this runner (no secret in play)"
+          fi
+
+          fresh_clone "$CO_REPO" "$CO_PATH" "$CO_REF"
+          echo "checked out ${CO_REPO}${CO_REF:+@${CO_REF}} -> ${CO_PATH}"
+
+          # Sibling repos the workspace path-depends on. A failure here is
+          # fatal, unlike the previous loop which logged WARN and carried on
+          # into a build that could only fail later, further from the cause.
+          for rd in $CO_CLONES; do
+            [ -n "$rd" ] || continue
             r="${rd%%:*}"; d="${rd##*:}"
-            [ ! -d "$d" ] && git clone --depth 1 "https://x-access-token:${TOKEN}@github.com/${r}.git" "$d" || echo "WARN: failed to clone ${r} into ${d}"
+            case "$d" in
+              ""|/*|*..*) echo "::error::unsafe clone-repos destination '$d'"; exit 1 ;;
+            esac
+            fresh_clone "$r" "$d"
+            echo "cloned sibling ${r} -> ${d}"
           done
       - uses: dtolnay/rust-toolchain@stable
         with: { components: 'rustfmt, clippy' }
@@ -274,18 +546,84 @@ jobs:
   cargo-deny:
     if: inputs.run-security
     needs: [windows]
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(inputs.linux-runner) }}
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v7
-        with: { repository: '${{ inputs.checkout-repo }}', ref: '${{ inputs.checkout-ref }}', token: '${{ secrets.CHECKOUT_TOKEN }}', path: '${{ inputs.checkout-path }}' }
-      - name: Clone workspace repos
-        if: inputs.clone-repos != ''
+      # ── CHECKOUT WITHOUT A MANDATORY CROSS-ORG TOKEN ──────────────────
+      #
+      # This replaced `actions/checkout` + an `x-access-token` clone loop,
+      # both of which required secrets.CHECKOUT_TOKEN. That secret never
+      # existed, so central dispatch could not check out a private repo in
+      # another org and no dispatched build could run at all.
+      #
+      # A self-hosted runner already holds a working SSH key - it is how
+      # claude-review.yml authenticates - so on those runners no secret is
+      # needed. When CHECKOUT_TOKEN *is* set (GitHub-hosted runners, which
+      # carry no credentials of their own) the HTTPS form is used instead.
+      # Same step either way, so the two paths cannot drift apart.
+      - name: Check out the target workspace
+        shell: bash
+        env:
+          CHECKOUT_TOKEN: ${{ secrets.CHECKOUT_TOKEN }}
+          CO_REPO: ${{ inputs.checkout-repo }}
+          CO_REF: ${{ inputs.checkout-ref }}
+          CO_PATH: ${{ inputs.checkout-path }}
+          CO_CLONES: ${{ inputs.clone-repos }}
         run: |
-          TOKEN=${{ secrets.CHECKOUT_TOKEN }}
-          for rd in ${{ inputs.clone-repos }}; do
+          set -euo pipefail
+
+          # The destination is emptied before cloning, so a malformed value
+          # here would erase the wrong tree. Absolute paths and traversal are
+          # refused outright rather than normalised.
+          case "$CO_PATH" in
+            "" ) echo "::error::checkout-path is empty"; exit 1 ;;
+            /* ) echo "::error::checkout-path must be relative, got '$CO_PATH'"; exit 1 ;;
+            *..* ) echo "::error::checkout-path must not contain '..', got '$CO_PATH'"; exit 1 ;;
+          esac
+
+          url_for() {
+            if [ -n "${CHECKOUT_TOKEN:-}" ]; then
+              printf 'https://x-access-token:%s@github.com/%s.git' "$CHECKOUT_TOKEN" "$1"
+            else
+              printf 'git@github.com:%s.git' "$1"
+            fi
+          }
+
+          # Mirrors actions/checkout: the destination starts empty every run,
+          # so a build never inherits files from a previous one. Confined to
+          # the job workspace by the guards above, which is the one tree the
+          # runner is allowed to write (see gh-runner-setup clamp-deletes).
+          fresh_clone() {
+            repo="$1"; dest="$2"; ref="${3:-}"
+            rm -rf -- "$dest"
+            mkdir -p -- "$dest"
+            if [ -n "$ref" ]; then
+              git clone --depth 1 --branch "$ref" "$(url_for "$repo")" "$dest"
+            else
+              git clone --depth 1 "$(url_for "$repo")" "$dest"
+            fi
+          }
+
+          if [ -n "${CHECKOUT_TOKEN:-}" ]; then
+            echo "auth: CHECKOUT_TOKEN (https)"
+          else
+            echo "auth: ambient SSH key on this runner (no secret in play)"
+          fi
+
+          fresh_clone "$CO_REPO" "$CO_PATH" "$CO_REF"
+          echo "checked out ${CO_REPO}${CO_REF:+@${CO_REF}} -> ${CO_PATH}"
+
+          # Sibling repos the workspace path-depends on. A failure here is
+          # fatal, unlike the previous loop which logged WARN and carried on
+          # into a build that could only fail later, further from the cause.
+          for rd in $CO_CLONES; do
+            [ -n "$rd" ] || continue
             r="${rd%%:*}"; d="${rd##*:}"
-            [ ! -d "$d" ] && git clone --depth 1 "https://x-access-token:${TOKEN}@github.com/${r}.git" "$d" || echo "WARN: failed to clone ${r} into ${d}"
+            case "$d" in
+              ""|/*|*..*) echo "::error::unsafe clone-repos destination '$d'"; exit 1 ;;
+            esac
+            fresh_clone "$r" "$d"
+            echo "cloned sibling ${r} -> ${d}"
           done
       - name: Ensure deny.toml (fetch shared default if repo has none)
         working-directory: ${{ inputs.checkout-path }}
@@ -311,18 +649,84 @@ jobs:
   security-audit:
     if: inputs.run-security
     needs: [windows]
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(inputs.linux-runner) }}
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v7
-        with: { repository: '${{ inputs.checkout-repo }}', ref: '${{ inputs.checkout-ref }}', token: '${{ secrets.CHECKOUT_TOKEN }}', path: '${{ inputs.checkout-path }}' }
-      - name: Clone workspace repos
-        if: inputs.clone-repos != ''
+      # ── CHECKOUT WITHOUT A MANDATORY CROSS-ORG TOKEN ──────────────────
+      #
+      # This replaced `actions/checkout` + an `x-access-token` clone loop,
+      # both of which required secrets.CHECKOUT_TOKEN. That secret never
+      # existed, so central dispatch could not check out a private repo in
+      # another org and no dispatched build could run at all.
+      #
+      # A self-hosted runner already holds a working SSH key - it is how
+      # claude-review.yml authenticates - so on those runners no secret is
+      # needed. When CHECKOUT_TOKEN *is* set (GitHub-hosted runners, which
+      # carry no credentials of their own) the HTTPS form is used instead.
+      # Same step either way, so the two paths cannot drift apart.
+      - name: Check out the target workspace
+        shell: bash
+        env:
+          CHECKOUT_TOKEN: ${{ secrets.CHECKOUT_TOKEN }}
+          CO_REPO: ${{ inputs.checkout-repo }}
+          CO_REF: ${{ inputs.checkout-ref }}
+          CO_PATH: ${{ inputs.checkout-path }}
+          CO_CLONES: ${{ inputs.clone-repos }}
         run: |
-          TOKEN=${{ secrets.CHECKOUT_TOKEN }}
-          for rd in ${{ inputs.clone-repos }}; do
+          set -euo pipefail
+
+          # The destination is emptied before cloning, so a malformed value
+          # here would erase the wrong tree. Absolute paths and traversal are
+          # refused outright rather than normalised.
+          case "$CO_PATH" in
+            "" ) echo "::error::checkout-path is empty"; exit 1 ;;
+            /* ) echo "::error::checkout-path must be relative, got '$CO_PATH'"; exit 1 ;;
+            *..* ) echo "::error::checkout-path must not contain '..', got '$CO_PATH'"; exit 1 ;;
+          esac
+
+          url_for() {
+            if [ -n "${CHECKOUT_TOKEN:-}" ]; then
+              printf 'https://x-access-token:%s@github.com/%s.git' "$CHECKOUT_TOKEN" "$1"
+            else
+              printf 'git@github.com:%s.git' "$1"
+            fi
+          }
+
+          # Mirrors actions/checkout: the destination starts empty every run,
+          # so a build never inherits files from a previous one. Confined to
+          # the job workspace by the guards above, which is the one tree the
+          # runner is allowed to write (see gh-runner-setup clamp-deletes).
+          fresh_clone() {
+            repo="$1"; dest="$2"; ref="${3:-}"
+            rm -rf -- "$dest"
+            mkdir -p -- "$dest"
+            if [ -n "$ref" ]; then
+              git clone --depth 1 --branch "$ref" "$(url_for "$repo")" "$dest"
+            else
+              git clone --depth 1 "$(url_for "$repo")" "$dest"
+            fi
+          }
+
+          if [ -n "${CHECKOUT_TOKEN:-}" ]; then
+            echo "auth: CHECKOUT_TOKEN (https)"
+          else
+            echo "auth: ambient SSH key on this runner (no secret in play)"
+          fi
+
+          fresh_clone "$CO_REPO" "$CO_PATH" "$CO_REF"
+          echo "checked out ${CO_REPO}${CO_REF:+@${CO_REF}} -> ${CO_PATH}"
+
+          # Sibling repos the workspace path-depends on. A failure here is
+          # fatal, unlike the previous loop which logged WARN and carried on
+          # into a build that could only fail later, further from the cause.
+          for rd in $CO_CLONES; do
+            [ -n "$rd" ] || continue
             r="${rd%%:*}"; d="${rd##*:}"
-            [ ! -d "$d" ] && git clone --depth 1 "https://x-access-token:${TOKEN}@github.com/${r}.git" "$d" || echo "WARN: failed to clone ${r} into ${d}"
+            case "$d" in
+              ""|/*|*..*) echo "::error::unsafe clone-repos destination '$d'"; exit 1 ;;
+            esac
+            fresh_clone "$r" "$d"
+            echo "cloned sibling ${r} -> ${d}"
           done
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
@@ -339,17 +743,83 @@ jobs:
   release-linux:
     if: inputs.build-release
     needs: [windows, lint]
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(inputs.linux-runner) }}
     steps:
-      - uses: actions/checkout@v7
-        with: { repository: '${{ inputs.checkout-repo }}', ref: '${{ inputs.checkout-ref }}', token: '${{ secrets.CHECKOUT_TOKEN }}', path: '${{ inputs.checkout-path }}' }
-      - name: Clone workspace repos
-        if: inputs.clone-repos != ''
+      # ── CHECKOUT WITHOUT A MANDATORY CROSS-ORG TOKEN ──────────────────
+      #
+      # This replaced `actions/checkout` + an `x-access-token` clone loop,
+      # both of which required secrets.CHECKOUT_TOKEN. That secret never
+      # existed, so central dispatch could not check out a private repo in
+      # another org and no dispatched build could run at all.
+      #
+      # A self-hosted runner already holds a working SSH key - it is how
+      # claude-review.yml authenticates - so on those runners no secret is
+      # needed. When CHECKOUT_TOKEN *is* set (GitHub-hosted runners, which
+      # carry no credentials of their own) the HTTPS form is used instead.
+      # Same step either way, so the two paths cannot drift apart.
+      - name: Check out the target workspace
+        shell: bash
+        env:
+          CHECKOUT_TOKEN: ${{ secrets.CHECKOUT_TOKEN }}
+          CO_REPO: ${{ inputs.checkout-repo }}
+          CO_REF: ${{ inputs.checkout-ref }}
+          CO_PATH: ${{ inputs.checkout-path }}
+          CO_CLONES: ${{ inputs.clone-repos }}
         run: |
-          TOKEN=${{ secrets.CHECKOUT_TOKEN }}
-          for rd in ${{ inputs.clone-repos }}; do
+          set -euo pipefail
+
+          # The destination is emptied before cloning, so a malformed value
+          # here would erase the wrong tree. Absolute paths and traversal are
+          # refused outright rather than normalised.
+          case "$CO_PATH" in
+            "" ) echo "::error::checkout-path is empty"; exit 1 ;;
+            /* ) echo "::error::checkout-path must be relative, got '$CO_PATH'"; exit 1 ;;
+            *..* ) echo "::error::checkout-path must not contain '..', got '$CO_PATH'"; exit 1 ;;
+          esac
+
+          url_for() {
+            if [ -n "${CHECKOUT_TOKEN:-}" ]; then
+              printf 'https://x-access-token:%s@github.com/%s.git' "$CHECKOUT_TOKEN" "$1"
+            else
+              printf 'git@github.com:%s.git' "$1"
+            fi
+          }
+
+          # Mirrors actions/checkout: the destination starts empty every run,
+          # so a build never inherits files from a previous one. Confined to
+          # the job workspace by the guards above, which is the one tree the
+          # runner is allowed to write (see gh-runner-setup clamp-deletes).
+          fresh_clone() {
+            repo="$1"; dest="$2"; ref="${3:-}"
+            rm -rf -- "$dest"
+            mkdir -p -- "$dest"
+            if [ -n "$ref" ]; then
+              git clone --depth 1 --branch "$ref" "$(url_for "$repo")" "$dest"
+            else
+              git clone --depth 1 "$(url_for "$repo")" "$dest"
+            fi
+          }
+
+          if [ -n "${CHECKOUT_TOKEN:-}" ]; then
+            echo "auth: CHECKOUT_TOKEN (https)"
+          else
+            echo "auth: ambient SSH key on this runner (no secret in play)"
+          fi
+
+          fresh_clone "$CO_REPO" "$CO_PATH" "$CO_REF"
+          echo "checked out ${CO_REPO}${CO_REF:+@${CO_REF}} -> ${CO_PATH}"
+
+          # Sibling repos the workspace path-depends on. A failure here is
+          # fatal, unlike the previous loop which logged WARN and carried on
+          # into a build that could only fail later, further from the cause.
+          for rd in $CO_CLONES; do
+            [ -n "$rd" ] || continue
             r="${rd%%:*}"; d="${rd##*:}"
-            [ ! -d "$d" ] && git clone --depth 1 "https://x-access-token:${TOKEN}@github.com/${r}.git" "$d" || echo "WARN: failed to clone ${r} into ${d}"
+            case "$d" in
+              ""|/*|*..*) echo "::error::unsafe clone-repos destination '$d'"; exit 1 ;;
+            esac
+            fresh_clone "$r" "$d"
+            echo "cloned sibling ${r} -> ${d}"
           done
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
@@ -366,18 +836,83 @@ jobs:
   release-windows:
     if: inputs.build-release
     needs: [windows, lint]
-    runs-on: windows-latest
+    runs-on: ${{ fromJSON(inputs.windows-runner) }}
     steps:
-      - uses: actions/checkout@v7
-        with: { repository: '${{ inputs.checkout-repo }}', ref: '${{ inputs.checkout-ref }}', token: '${{ secrets.CHECKOUT_TOKEN }}', path: '${{ inputs.checkout-path }}' }
-      - name: Clone workspace repos
-        if: inputs.clone-repos != ''
+      # ── CHECKOUT WITHOUT A MANDATORY CROSS-ORG TOKEN ──────────────────
+      #
+      # This replaced `actions/checkout` + an `x-access-token` clone loop,
+      # both of which required secrets.CHECKOUT_TOKEN. That secret never
+      # existed, so central dispatch could not check out a private repo in
+      # another org and no dispatched build could run at all.
+      #
+      # A self-hosted runner already holds a working SSH key - it is how
+      # claude-review.yml authenticates - so on those runners no secret is
+      # needed. When CHECKOUT_TOKEN *is* set (GitHub-hosted runners, which
+      # carry no credentials of their own) the HTTPS form is used instead.
+      # Same step either way, so the two paths cannot drift apart.
+      - name: Check out the target workspace
         shell: bash
+        env:
+          CHECKOUT_TOKEN: ${{ secrets.CHECKOUT_TOKEN }}
+          CO_REPO: ${{ inputs.checkout-repo }}
+          CO_REF: ${{ inputs.checkout-ref }}
+          CO_PATH: ${{ inputs.checkout-path }}
+          CO_CLONES: ${{ inputs.clone-repos }}
         run: |
-          TOKEN=${{ secrets.CHECKOUT_TOKEN }}
-          for rd in ${{ inputs.clone-repos }}; do
+          set -euo pipefail
+
+          # The destination is emptied before cloning, so a malformed value
+          # here would erase the wrong tree. Absolute paths and traversal are
+          # refused outright rather than normalised.
+          case "$CO_PATH" in
+            "" ) echo "::error::checkout-path is empty"; exit 1 ;;
+            /* ) echo "::error::checkout-path must be relative, got '$CO_PATH'"; exit 1 ;;
+            *..* ) echo "::error::checkout-path must not contain '..', got '$CO_PATH'"; exit 1 ;;
+          esac
+
+          url_for() {
+            if [ -n "${CHECKOUT_TOKEN:-}" ]; then
+              printf 'https://x-access-token:%s@github.com/%s.git' "$CHECKOUT_TOKEN" "$1"
+            else
+              printf 'git@github.com:%s.git' "$1"
+            fi
+          }
+
+          # Mirrors actions/checkout: the destination starts empty every run,
+          # so a build never inherits files from a previous one. Confined to
+          # the job workspace by the guards above, which is the one tree the
+          # runner is allowed to write (see gh-runner-setup clamp-deletes).
+          fresh_clone() {
+            repo="$1"; dest="$2"; ref="${3:-}"
+            rm -rf -- "$dest"
+            mkdir -p -- "$dest"
+            if [ -n "$ref" ]; then
+              git clone --depth 1 --branch "$ref" "$(url_for "$repo")" "$dest"
+            else
+              git clone --depth 1 "$(url_for "$repo")" "$dest"
+            fi
+          }
+
+          if [ -n "${CHECKOUT_TOKEN:-}" ]; then
+            echo "auth: CHECKOUT_TOKEN (https)"
+          else
+            echo "auth: ambient SSH key on this runner (no secret in play)"
+          fi
+
+          fresh_clone "$CO_REPO" "$CO_PATH" "$CO_REF"
+          echo "checked out ${CO_REPO}${CO_REF:+@${CO_REF}} -> ${CO_PATH}"
+
+          # Sibling repos the workspace path-depends on. A failure here is
+          # fatal, unlike the previous loop which logged WARN and carried on
+          # into a build that could only fail later, further from the cause.
+          for rd in $CO_CLONES; do
+            [ -n "$rd" ] || continue
             r="${rd%%:*}"; d="${rd##*:}"
-            [ ! -d "$d" ] && git clone --depth 1 "https://x-access-token:${TOKEN}@github.com/${r}.git" "$d" || echo "WARN: failed to clone ${r} into ${d}"
+            case "$d" in
+              ""|/*|*..*) echo "::error::unsafe clone-repos destination '$d'"; exit 1 ;;
+            esac
+            fresh_clone "$r" "$d"
+            echo "cloned sibling ${r} -> ${d}"
           done
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
@@ -404,7 +939,7 @@ jobs:
       - lint
       - cargo-deny
       - security-audit
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(inputs.linux-runner) }}
     steps:
       - run: |
           echo "=== CI Results for ${{ inputs.target-name }} ==="
