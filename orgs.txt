@@ -11,3 +11,4 @@ kriyal-tantu
 kriyal-tools
 kriyal-vendor
 kriyalos
+kriyal-datasets
