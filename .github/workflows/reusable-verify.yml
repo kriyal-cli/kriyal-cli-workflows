@@ -115,6 +115,43 @@ jobs:
           repository: ${{ inputs.checkout-repo }}
           ref: ${{ inputs.checkout-ref }}
 
+      # ── rustup MAY NOT EXIST ON A SELF-HOSTED RUNNER ──────────────────
+      #
+      # GitHub-hosted images ship rustup preinstalled, so "Install Rust"
+      # below could assume it. A bare self-hosted runner has not got it, and
+      # the job dies at `rustup: command not found` (exit 127) before fmt,
+      # clippy or a single test has run - seen on kriyalci1 dispatching
+      # kriyal-base/common, where the service account had no toolchain at
+      # all. Same bootstrap ccv.yml already carries, for the same reason.
+      #
+      # No-op (and no network call) when rustup is already present, so
+      # hosted runners are unaffected.
+      - name: Ensure rustup is available
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v rustup >/dev/null 2>&1; then
+            echo "rustup present: $(rustup --version 2>&1 | head -1)"
+            exit 0
+          fi
+          echo "rustup not found - bootstrapping"
+          # Windows needs rustup-init.exe; the shell installer at sh.rustup.rs
+          # is a POSIX script that does not set up a usable Windows toolchain
+          # even when run under Git Bash.
+          if [ "${RUNNER_OS:-}" = "Windows" ]; then
+            curl -sSfLo rustup-init.exe https://win.rustup.rs/x86_64
+            ./rustup-init.exe -y --default-toolchain stable --profile minimal
+            rm -f rustup-init.exe
+            printf '%s\\.cargo\\bin\n' "$USERPROFILE" >> "$GITHUB_PATH"
+            export PATH="$USERPROFILE/.cargo/bin:$PATH"
+          else
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+              | sh -s -- -y --default-toolchain stable --profile minimal
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/.cargo/bin:$PATH"
+          fi
+          rustup --version
+
       - name: Install Rust
         run: |
           set -euo pipefail
