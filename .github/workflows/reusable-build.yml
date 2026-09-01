@@ -265,7 +265,7 @@ jobs:
           if [ -z "${CO_CLONES// /}" ]; then
             echo "clone-repos not supplied - deriving siblings from Cargo.toml path-deps"
             _mapdir=$(mktemp -d)
-            if git clone --depth 1 "$(url_for kriyal-cli-private/ci-dispatch)" "$_mapdir/wf" >/dev/null 2>&1; then
+            if git clone --depth 1 "$(url_for kriyal-cli-private/ci-rules)" "$_mapdir/wf" 2>"$_mapdir/err"; then
               _map="$_mapdir/wf/workspace-repos.map"
               # A path-dep lives in ANOTHER repo only if it ESCAPES the
               # checkout root. That is decided by comparing how many `../`
@@ -307,7 +307,7 @@ jobs:
               done
               echo "derived clone-repos:${CO_CLONES:-<none>}"
             else
-              echo "::warning::could not fetch workspace-repos.map - no siblings derived"
+              echo "::warning::could not fetch workspace-repos.map - no siblings derived. git said: $(tr '\n' ' ' < "$_mapdir/err" | sed 's/x-access-token:[^@]*@/x-access-token:***@/g')"
             fi
             rm -rf -- "$_mapdir"
           fi
@@ -472,7 +472,7 @@ jobs:
           if [ -z "${CO_CLONES// /}" ]; then
             echo "clone-repos not supplied - deriving siblings from Cargo.toml path-deps"
             _mapdir=$(mktemp -d)
-            if git clone --depth 1 "$(url_for kriyal-cli-private/ci-dispatch)" "$_mapdir/wf" >/dev/null 2>&1; then
+            if git clone --depth 1 "$(url_for kriyal-cli-private/ci-rules)" "$_mapdir/wf" 2>"$_mapdir/err"; then
               _map="$_mapdir/wf/workspace-repos.map"
               # A path-dep lives in ANOTHER repo only if it ESCAPES the
               # checkout root. That is decided by comparing how many `../`
@@ -514,7 +514,7 @@ jobs:
               done
               echo "derived clone-repos:${CO_CLONES:-<none>}"
             else
-              echo "::warning::could not fetch workspace-repos.map - no siblings derived"
+              echo "::warning::could not fetch workspace-repos.map - no siblings derived. git said: $(tr '\n' ' ' < "$_mapdir/err" | sed 's/x-access-token:[^@]*@/x-access-token:***@/g')"
             fi
             rm -rf -- "$_mapdir"
           fi
@@ -674,7 +674,7 @@ jobs:
           if [ -z "${CO_CLONES// /}" ]; then
             echo "clone-repos not supplied - deriving siblings from Cargo.toml path-deps"
             _mapdir=$(mktemp -d)
-            if git clone --depth 1 "$(url_for kriyal-cli-private/ci-dispatch)" "$_mapdir/wf" >/dev/null 2>&1; then
+            if git clone --depth 1 "$(url_for kriyal-cli-private/ci-rules)" "$_mapdir/wf" 2>"$_mapdir/err"; then
               _map="$_mapdir/wf/workspace-repos.map"
               # A path-dep lives in ANOTHER repo only if it ESCAPES the
               # checkout root. That is decided by comparing how many `../`
@@ -716,7 +716,7 @@ jobs:
               done
               echo "derived clone-repos:${CO_CLONES:-<none>}"
             else
-              echo "::warning::could not fetch workspace-repos.map - no siblings derived"
+              echo "::warning::could not fetch workspace-repos.map - no siblings derived. git said: $(tr '\n' ' ' < "$_mapdir/err" | sed 's/x-access-token:[^@]*@/x-access-token:***@/g')"
             fi
             rm -rf -- "$_mapdir"
           fi
@@ -872,7 +872,7 @@ jobs:
           if [ -z "${CO_CLONES// /}" ]; then
             echo "clone-repos not supplied - deriving siblings from Cargo.toml path-deps"
             _mapdir=$(mktemp -d)
-            if git clone --depth 1 "$(url_for kriyal-cli-private/ci-dispatch)" "$_mapdir/wf" >/dev/null 2>&1; then
+            if git clone --depth 1 "$(url_for kriyal-cli-private/ci-rules)" "$_mapdir/wf" 2>"$_mapdir/err"; then
               _map="$_mapdir/wf/workspace-repos.map"
               # A path-dep lives in ANOTHER repo only if it ESCAPES the
               # checkout root. That is decided by comparing how many `../`
@@ -914,7 +914,7 @@ jobs:
               done
               echo "derived clone-repos:${CO_CLONES:-<none>}"
             else
-              echo "::warning::could not fetch workspace-repos.map - no siblings derived"
+              echo "::warning::could not fetch workspace-repos.map - no siblings derived. git said: $(tr '\n' ' ' < "$_mapdir/err" | sed 's/x-access-token:[^@]*@/x-access-token:***@/g')"
             fi
             rm -rf -- "$_mapdir"
           fi
@@ -1076,7 +1076,7 @@ jobs:
           if [ -z "${CO_CLONES// /}" ]; then
             echo "clone-repos not supplied - deriving siblings from Cargo.toml path-deps"
             _mapdir=$(mktemp -d)
-            if git clone --depth 1 "$(url_for kriyal-cli-private/ci-dispatch)" "$_mapdir/wf" >/dev/null 2>&1; then
+            if git clone --depth 1 "$(url_for kriyal-cli-private/ci-rules)" "$_mapdir/wf" 2>"$_mapdir/err"; then
               _map="$_mapdir/wf/workspace-repos.map"
               # A path-dep lives in ANOTHER repo only if it ESCAPES the
               # checkout root. That is decided by comparing how many `../`
@@ -1118,7 +1118,7 @@ jobs:
               done
               echo "derived clone-repos:${CO_CLONES:-<none>}"
             else
-              echo "::warning::could not fetch workspace-repos.map - no siblings derived"
+              echo "::warning::could not fetch workspace-repos.map - no siblings derived. git said: $(tr '\n' ' ' < "$_mapdir/err" | sed 's/x-access-token:[^@]*@/x-access-token:***@/g')"
             fi
             rm -rf -- "$_mapdir"
           fi
@@ -1281,7 +1281,7 @@ jobs:
           if [ -z "${CO_CLONES// /}" ]; then
             echo "clone-repos not supplied - deriving siblings from Cargo.toml path-deps"
             _mapdir=$(mktemp -d)
-            if git clone --depth 1 "$(url_for kriyal-cli-private/ci-dispatch)" "$_mapdir/wf" >/dev/null 2>&1; then
+            if git clone --depth 1 "$(url_for kriyal-cli-private/ci-rules)" "$_mapdir/wf" 2>"$_mapdir/err"; then
               _map="$_mapdir/wf/workspace-repos.map"
               # A path-dep lives in ANOTHER repo only if it ESCAPES the
               # checkout root. That is decided by comparing how many `../`
@@ -1323,7 +1323,7 @@ jobs:
               done
               echo "derived clone-repos:${CO_CLONES:-<none>}"
             else
-              echo "::warning::could not fetch workspace-repos.map - no siblings derived"
+              echo "::warning::could not fetch workspace-repos.map - no siblings derived. git said: $(tr '\n' ' ' < "$_mapdir/err" | sed 's/x-access-token:[^@]*@/x-access-token:***@/g')"
             fi
             rm -rf -- "$_mapdir"
           fi
@@ -1476,7 +1476,7 @@ jobs:
           if [ -z "${CO_CLONES// /}" ]; then
             echo "clone-repos not supplied - deriving siblings from Cargo.toml path-deps"
             _mapdir=$(mktemp -d)
-            if git clone --depth 1 "$(url_for kriyal-cli-private/ci-dispatch)" "$_mapdir/wf" >/dev/null 2>&1; then
+            if git clone --depth 1 "$(url_for kriyal-cli-private/ci-rules)" "$_mapdir/wf" 2>"$_mapdir/err"; then
               _map="$_mapdir/wf/workspace-repos.map"
               # A path-dep lives in ANOTHER repo only if it ESCAPES the
               # checkout root. That is decided by comparing how many `../`
@@ -1518,7 +1518,7 @@ jobs:
               done
               echo "derived clone-repos:${CO_CLONES:-<none>}"
             else
-              echo "::warning::could not fetch workspace-repos.map - no siblings derived"
+              echo "::warning::could not fetch workspace-repos.map - no siblings derived. git said: $(tr '\n' ' ' < "$_mapdir/err" | sed 's/x-access-token:[^@]*@/x-access-token:***@/g')"
             fi
             rm -rf -- "$_mapdir"
           fi
@@ -1671,7 +1671,7 @@ jobs:
           if [ -z "${CO_CLONES// /}" ]; then
             echo "clone-repos not supplied - deriving siblings from Cargo.toml path-deps"
             _mapdir=$(mktemp -d)
-            if git clone --depth 1 "$(url_for kriyal-cli-private/ci-dispatch)" "$_mapdir/wf" >/dev/null 2>&1; then
+            if git clone --depth 1 "$(url_for kriyal-cli-private/ci-rules)" "$_mapdir/wf" 2>"$_mapdir/err"; then
               _map="$_mapdir/wf/workspace-repos.map"
               # A path-dep lives in ANOTHER repo only if it ESCAPES the
               # checkout root. That is decided by comparing how many `../`
@@ -1713,7 +1713,7 @@ jobs:
               done
               echo "derived clone-repos:${CO_CLONES:-<none>}"
             else
-              echo "::warning::could not fetch workspace-repos.map - no siblings derived"
+              echo "::warning::could not fetch workspace-repos.map - no siblings derived. git said: $(tr '\n' ' ' < "$_mapdir/err" | sed 's/x-access-token:[^@]*@/x-access-token:***@/g')"
             fi
             rm -rf -- "$_mapdir"
           fi
