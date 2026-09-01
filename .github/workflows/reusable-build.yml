@@ -28,6 +28,16 @@ on:
         required: false
         type: string
         default: '.'
+      workspace-map:
+        # Contents of workspace-repos.map, passed in rather than fetched.
+        # The map is private and the only token in play cannot read the repo
+        # holding it, so a caller that already has the file - build-dispatch
+        # lives beside it - hands it over directly. Empty falls back to the
+        # clone below, which is all a caller outside that repo can do.
+        description: 'Contents of workspace-repos.map (directory -> owner/repo). Empty = try to clone it.'
+        required: false
+        type: string
+        default: ''
       clone-repos:
         description: 'Space-separated "owner/repo:localdir" pairs to shallow-clone as siblings of checkout-path (all cloned with the same checkout-token)'
         required: false
@@ -166,6 +176,7 @@ jobs:
           CO_REF: ${{ inputs.checkout-ref }}
           CO_PATH: ${{ inputs.checkout-path }}
           CO_CLONES: ${{ inputs.clone-repos }}
+          WORKSPACE_MAP: ${{ inputs.workspace-map }}
         run: |
           set -euo pipefail
 
@@ -265,8 +276,22 @@ jobs:
           if [ -z "${CO_CLONES// /}" ]; then
             echo "clone-repos not supplied - deriving siblings from Cargo.toml path-deps"
             _mapdir=$(mktemp -d)
-            if git clone --depth 1 "$(url_for kriyal-cli-private/ci-rules)" "$_mapdir/wf" 2>"$_mapdir/err"; then
+            # Prefer the map handed in by the caller. Fetching it needs a
+            # credential that can read a PRIVATE repo in another org, which
+            # the runner does not have; a caller that lives beside the map
+            # already has it and needs no credential at all.
+            if [ -n "${WORKSPACE_MAP:-}" ]; then
+              _map="$_mapdir/workspace-repos.map"
+              printf '%s\n' "$WORKSPACE_MAP" > "$_map"
+              echo "using workspace-repos.map supplied by the caller ($(grep -cvE '^[[:space:]]*(#|$)' "$_map") entries)"
+              _have_map=1
+            elif git clone --depth 1 "$(url_for kriyal-cli-private/ci-rules)" "$_mapdir/wf" 2>"$_mapdir/err"; then
               _map="$_mapdir/wf/workspace-repos.map"
+              _have_map=1
+            else
+              _have_map=0
+            fi
+            if [ "$_have_map" = 1 ]; then
               # A path-dep lives in ANOTHER repo only if it ESCAPES the
               # checkout root. That is decided by comparing how many `../`
               # the path uses against how deep the manifest sits below the
@@ -307,7 +332,7 @@ jobs:
               done
               echo "derived clone-repos:${CO_CLONES:-<none>}"
             else
-              echo "::warning::could not fetch workspace-repos.map - no siblings derived. git said: $(tr '\n' ' ' < "$_mapdir/err" | sed 's/x-access-token:[^@]*@/x-access-token:***@/g')"
+              echo "::warning::no workspace-repos.map - no siblings derived. Pass workspace-map, or grant the checkout token read on the repo holding it. git said: $(tr '\n' ' ' < "$_mapdir/err" 2>/dev/null | sed 's/x-access-token:[^@]*@/x-access-token:***@/g')"
             fi
             rm -rf -- "$_mapdir"
           fi
@@ -373,6 +398,7 @@ jobs:
           CO_REF: ${{ inputs.checkout-ref }}
           CO_PATH: ${{ inputs.checkout-path }}
           CO_CLONES: ${{ inputs.clone-repos }}
+          WORKSPACE_MAP: ${{ inputs.workspace-map }}
         run: |
           set -euo pipefail
 
@@ -472,8 +498,22 @@ jobs:
           if [ -z "${CO_CLONES// /}" ]; then
             echo "clone-repos not supplied - deriving siblings from Cargo.toml path-deps"
             _mapdir=$(mktemp -d)
-            if git clone --depth 1 "$(url_for kriyal-cli-private/ci-rules)" "$_mapdir/wf" 2>"$_mapdir/err"; then
+            # Prefer the map handed in by the caller. Fetching it needs a
+            # credential that can read a PRIVATE repo in another org, which
+            # the runner does not have; a caller that lives beside the map
+            # already has it and needs no credential at all.
+            if [ -n "${WORKSPACE_MAP:-}" ]; then
+              _map="$_mapdir/workspace-repos.map"
+              printf '%s\n' "$WORKSPACE_MAP" > "$_map"
+              echo "using workspace-repos.map supplied by the caller ($(grep -cvE '^[[:space:]]*(#|$)' "$_map") entries)"
+              _have_map=1
+            elif git clone --depth 1 "$(url_for kriyal-cli-private/ci-rules)" "$_mapdir/wf" 2>"$_mapdir/err"; then
               _map="$_mapdir/wf/workspace-repos.map"
+              _have_map=1
+            else
+              _have_map=0
+            fi
+            if [ "$_have_map" = 1 ]; then
               # A path-dep lives in ANOTHER repo only if it ESCAPES the
               # checkout root. That is decided by comparing how many `../`
               # the path uses against how deep the manifest sits below the
@@ -514,7 +554,7 @@ jobs:
               done
               echo "derived clone-repos:${CO_CLONES:-<none>}"
             else
-              echo "::warning::could not fetch workspace-repos.map - no siblings derived. git said: $(tr '\n' ' ' < "$_mapdir/err" | sed 's/x-access-token:[^@]*@/x-access-token:***@/g')"
+              echo "::warning::no workspace-repos.map - no siblings derived. Pass workspace-map, or grant the checkout token read on the repo holding it. git said: $(tr '\n' ' ' < "$_mapdir/err" 2>/dev/null | sed 's/x-access-token:[^@]*@/x-access-token:***@/g')"
             fi
             rm -rf -- "$_mapdir"
           fi
@@ -575,6 +615,7 @@ jobs:
           CO_REF: ${{ inputs.checkout-ref }}
           CO_PATH: ${{ inputs.checkout-path }}
           CO_CLONES: ${{ inputs.clone-repos }}
+          WORKSPACE_MAP: ${{ inputs.workspace-map }}
         run: |
           set -euo pipefail
 
@@ -674,8 +715,22 @@ jobs:
           if [ -z "${CO_CLONES// /}" ]; then
             echo "clone-repos not supplied - deriving siblings from Cargo.toml path-deps"
             _mapdir=$(mktemp -d)
-            if git clone --depth 1 "$(url_for kriyal-cli-private/ci-rules)" "$_mapdir/wf" 2>"$_mapdir/err"; then
+            # Prefer the map handed in by the caller. Fetching it needs a
+            # credential that can read a PRIVATE repo in another org, which
+            # the runner does not have; a caller that lives beside the map
+            # already has it and needs no credential at all.
+            if [ -n "${WORKSPACE_MAP:-}" ]; then
+              _map="$_mapdir/workspace-repos.map"
+              printf '%s\n' "$WORKSPACE_MAP" > "$_map"
+              echo "using workspace-repos.map supplied by the caller ($(grep -cvE '^[[:space:]]*(#|$)' "$_map") entries)"
+              _have_map=1
+            elif git clone --depth 1 "$(url_for kriyal-cli-private/ci-rules)" "$_mapdir/wf" 2>"$_mapdir/err"; then
               _map="$_mapdir/wf/workspace-repos.map"
+              _have_map=1
+            else
+              _have_map=0
+            fi
+            if [ "$_have_map" = 1 ]; then
               # A path-dep lives in ANOTHER repo only if it ESCAPES the
               # checkout root. That is decided by comparing how many `../`
               # the path uses against how deep the manifest sits below the
@@ -716,7 +771,7 @@ jobs:
               done
               echo "derived clone-repos:${CO_CLONES:-<none>}"
             else
-              echo "::warning::could not fetch workspace-repos.map - no siblings derived. git said: $(tr '\n' ' ' < "$_mapdir/err" | sed 's/x-access-token:[^@]*@/x-access-token:***@/g')"
+              echo "::warning::no workspace-repos.map - no siblings derived. Pass workspace-map, or grant the checkout token read on the repo holding it. git said: $(tr '\n' ' ' < "$_mapdir/err" 2>/dev/null | sed 's/x-access-token:[^@]*@/x-access-token:***@/g')"
             fi
             rm -rf -- "$_mapdir"
           fi
@@ -773,6 +828,7 @@ jobs:
           CO_REF: ${{ inputs.checkout-ref }}
           CO_PATH: ${{ inputs.checkout-path }}
           CO_CLONES: ${{ inputs.clone-repos }}
+          WORKSPACE_MAP: ${{ inputs.workspace-map }}
         run: |
           set -euo pipefail
 
@@ -872,8 +928,22 @@ jobs:
           if [ -z "${CO_CLONES// /}" ]; then
             echo "clone-repos not supplied - deriving siblings from Cargo.toml path-deps"
             _mapdir=$(mktemp -d)
-            if git clone --depth 1 "$(url_for kriyal-cli-private/ci-rules)" "$_mapdir/wf" 2>"$_mapdir/err"; then
+            # Prefer the map handed in by the caller. Fetching it needs a
+            # credential that can read a PRIVATE repo in another org, which
+            # the runner does not have; a caller that lives beside the map
+            # already has it and needs no credential at all.
+            if [ -n "${WORKSPACE_MAP:-}" ]; then
+              _map="$_mapdir/workspace-repos.map"
+              printf '%s\n' "$WORKSPACE_MAP" > "$_map"
+              echo "using workspace-repos.map supplied by the caller ($(grep -cvE '^[[:space:]]*(#|$)' "$_map") entries)"
+              _have_map=1
+            elif git clone --depth 1 "$(url_for kriyal-cli-private/ci-rules)" "$_mapdir/wf" 2>"$_mapdir/err"; then
               _map="$_mapdir/wf/workspace-repos.map"
+              _have_map=1
+            else
+              _have_map=0
+            fi
+            if [ "$_have_map" = 1 ]; then
               # A path-dep lives in ANOTHER repo only if it ESCAPES the
               # checkout root. That is decided by comparing how many `../`
               # the path uses against how deep the manifest sits below the
@@ -914,7 +984,7 @@ jobs:
               done
               echo "derived clone-repos:${CO_CLONES:-<none>}"
             else
-              echo "::warning::could not fetch workspace-repos.map - no siblings derived. git said: $(tr '\n' ' ' < "$_mapdir/err" | sed 's/x-access-token:[^@]*@/x-access-token:***@/g')"
+              echo "::warning::no workspace-repos.map - no siblings derived. Pass workspace-map, or grant the checkout token read on the repo holding it. git said: $(tr '\n' ' ' < "$_mapdir/err" 2>/dev/null | sed 's/x-access-token:[^@]*@/x-access-token:***@/g')"
             fi
             rm -rf -- "$_mapdir"
           fi
@@ -977,6 +1047,7 @@ jobs:
           CO_REF: ${{ inputs.checkout-ref }}
           CO_PATH: ${{ inputs.checkout-path }}
           CO_CLONES: ${{ inputs.clone-repos }}
+          WORKSPACE_MAP: ${{ inputs.workspace-map }}
         run: |
           set -euo pipefail
 
@@ -1076,8 +1147,22 @@ jobs:
           if [ -z "${CO_CLONES// /}" ]; then
             echo "clone-repos not supplied - deriving siblings from Cargo.toml path-deps"
             _mapdir=$(mktemp -d)
-            if git clone --depth 1 "$(url_for kriyal-cli-private/ci-rules)" "$_mapdir/wf" 2>"$_mapdir/err"; then
+            # Prefer the map handed in by the caller. Fetching it needs a
+            # credential that can read a PRIVATE repo in another org, which
+            # the runner does not have; a caller that lives beside the map
+            # already has it and needs no credential at all.
+            if [ -n "${WORKSPACE_MAP:-}" ]; then
+              _map="$_mapdir/workspace-repos.map"
+              printf '%s\n' "$WORKSPACE_MAP" > "$_map"
+              echo "using workspace-repos.map supplied by the caller ($(grep -cvE '^[[:space:]]*(#|$)' "$_map") entries)"
+              _have_map=1
+            elif git clone --depth 1 "$(url_for kriyal-cli-private/ci-rules)" "$_mapdir/wf" 2>"$_mapdir/err"; then
               _map="$_mapdir/wf/workspace-repos.map"
+              _have_map=1
+            else
+              _have_map=0
+            fi
+            if [ "$_have_map" = 1 ]; then
               # A path-dep lives in ANOTHER repo only if it ESCAPES the
               # checkout root. That is decided by comparing how many `../`
               # the path uses against how deep the manifest sits below the
@@ -1118,7 +1203,7 @@ jobs:
               done
               echo "derived clone-repos:${CO_CLONES:-<none>}"
             else
-              echo "::warning::could not fetch workspace-repos.map - no siblings derived. git said: $(tr '\n' ' ' < "$_mapdir/err" | sed 's/x-access-token:[^@]*@/x-access-token:***@/g')"
+              echo "::warning::no workspace-repos.map - no siblings derived. Pass workspace-map, or grant the checkout token read on the repo holding it. git said: $(tr '\n' ' ' < "$_mapdir/err" 2>/dev/null | sed 's/x-access-token:[^@]*@/x-access-token:***@/g')"
             fi
             rm -rf -- "$_mapdir"
           fi
@@ -1182,6 +1267,7 @@ jobs:
           CO_REF: ${{ inputs.checkout-ref }}
           CO_PATH: ${{ inputs.checkout-path }}
           CO_CLONES: ${{ inputs.clone-repos }}
+          WORKSPACE_MAP: ${{ inputs.workspace-map }}
         run: |
           set -euo pipefail
 
@@ -1281,8 +1367,22 @@ jobs:
           if [ -z "${CO_CLONES// /}" ]; then
             echo "clone-repos not supplied - deriving siblings from Cargo.toml path-deps"
             _mapdir=$(mktemp -d)
-            if git clone --depth 1 "$(url_for kriyal-cli-private/ci-rules)" "$_mapdir/wf" 2>"$_mapdir/err"; then
+            # Prefer the map handed in by the caller. Fetching it needs a
+            # credential that can read a PRIVATE repo in another org, which
+            # the runner does not have; a caller that lives beside the map
+            # already has it and needs no credential at all.
+            if [ -n "${WORKSPACE_MAP:-}" ]; then
+              _map="$_mapdir/workspace-repos.map"
+              printf '%s\n' "$WORKSPACE_MAP" > "$_map"
+              echo "using workspace-repos.map supplied by the caller ($(grep -cvE '^[[:space:]]*(#|$)' "$_map") entries)"
+              _have_map=1
+            elif git clone --depth 1 "$(url_for kriyal-cli-private/ci-rules)" "$_mapdir/wf" 2>"$_mapdir/err"; then
               _map="$_mapdir/wf/workspace-repos.map"
+              _have_map=1
+            else
+              _have_map=0
+            fi
+            if [ "$_have_map" = 1 ]; then
               # A path-dep lives in ANOTHER repo only if it ESCAPES the
               # checkout root. That is decided by comparing how many `../`
               # the path uses against how deep the manifest sits below the
@@ -1323,7 +1423,7 @@ jobs:
               done
               echo "derived clone-repos:${CO_CLONES:-<none>}"
             else
-              echo "::warning::could not fetch workspace-repos.map - no siblings derived. git said: $(tr '\n' ' ' < "$_mapdir/err" | sed 's/x-access-token:[^@]*@/x-access-token:***@/g')"
+              echo "::warning::no workspace-repos.map - no siblings derived. Pass workspace-map, or grant the checkout token read on the repo holding it. git said: $(tr '\n' ' ' < "$_mapdir/err" 2>/dev/null | sed 's/x-access-token:[^@]*@/x-access-token:***@/g')"
             fi
             rm -rf -- "$_mapdir"
           fi
@@ -1377,6 +1477,7 @@ jobs:
           CO_REF: ${{ inputs.checkout-ref }}
           CO_PATH: ${{ inputs.checkout-path }}
           CO_CLONES: ${{ inputs.clone-repos }}
+          WORKSPACE_MAP: ${{ inputs.workspace-map }}
         run: |
           set -euo pipefail
 
@@ -1476,8 +1577,22 @@ jobs:
           if [ -z "${CO_CLONES// /}" ]; then
             echo "clone-repos not supplied - deriving siblings from Cargo.toml path-deps"
             _mapdir=$(mktemp -d)
-            if git clone --depth 1 "$(url_for kriyal-cli-private/ci-rules)" "$_mapdir/wf" 2>"$_mapdir/err"; then
+            # Prefer the map handed in by the caller. Fetching it needs a
+            # credential that can read a PRIVATE repo in another org, which
+            # the runner does not have; a caller that lives beside the map
+            # already has it and needs no credential at all.
+            if [ -n "${WORKSPACE_MAP:-}" ]; then
+              _map="$_mapdir/workspace-repos.map"
+              printf '%s\n' "$WORKSPACE_MAP" > "$_map"
+              echo "using workspace-repos.map supplied by the caller ($(grep -cvE '^[[:space:]]*(#|$)' "$_map") entries)"
+              _have_map=1
+            elif git clone --depth 1 "$(url_for kriyal-cli-private/ci-rules)" "$_mapdir/wf" 2>"$_mapdir/err"; then
               _map="$_mapdir/wf/workspace-repos.map"
+              _have_map=1
+            else
+              _have_map=0
+            fi
+            if [ "$_have_map" = 1 ]; then
               # A path-dep lives in ANOTHER repo only if it ESCAPES the
               # checkout root. That is decided by comparing how many `../`
               # the path uses against how deep the manifest sits below the
@@ -1518,7 +1633,7 @@ jobs:
               done
               echo "derived clone-repos:${CO_CLONES:-<none>}"
             else
-              echo "::warning::could not fetch workspace-repos.map - no siblings derived. git said: $(tr '\n' ' ' < "$_mapdir/err" | sed 's/x-access-token:[^@]*@/x-access-token:***@/g')"
+              echo "::warning::no workspace-repos.map - no siblings derived. Pass workspace-map, or grant the checkout token read on the repo holding it. git said: $(tr '\n' ' ' < "$_mapdir/err" 2>/dev/null | sed 's/x-access-token:[^@]*@/x-access-token:***@/g')"
             fi
             rm -rf -- "$_mapdir"
           fi
@@ -1572,6 +1687,7 @@ jobs:
           CO_REF: ${{ inputs.checkout-ref }}
           CO_PATH: ${{ inputs.checkout-path }}
           CO_CLONES: ${{ inputs.clone-repos }}
+          WORKSPACE_MAP: ${{ inputs.workspace-map }}
         run: |
           set -euo pipefail
 
@@ -1671,8 +1787,22 @@ jobs:
           if [ -z "${CO_CLONES// /}" ]; then
             echo "clone-repos not supplied - deriving siblings from Cargo.toml path-deps"
             _mapdir=$(mktemp -d)
-            if git clone --depth 1 "$(url_for kriyal-cli-private/ci-rules)" "$_mapdir/wf" 2>"$_mapdir/err"; then
+            # Prefer the map handed in by the caller. Fetching it needs a
+            # credential that can read a PRIVATE repo in another org, which
+            # the runner does not have; a caller that lives beside the map
+            # already has it and needs no credential at all.
+            if [ -n "${WORKSPACE_MAP:-}" ]; then
+              _map="$_mapdir/workspace-repos.map"
+              printf '%s\n' "$WORKSPACE_MAP" > "$_map"
+              echo "using workspace-repos.map supplied by the caller ($(grep -cvE '^[[:space:]]*(#|$)' "$_map") entries)"
+              _have_map=1
+            elif git clone --depth 1 "$(url_for kriyal-cli-private/ci-rules)" "$_mapdir/wf" 2>"$_mapdir/err"; then
               _map="$_mapdir/wf/workspace-repos.map"
+              _have_map=1
+            else
+              _have_map=0
+            fi
+            if [ "$_have_map" = 1 ]; then
               # A path-dep lives in ANOTHER repo only if it ESCAPES the
               # checkout root. That is decided by comparing how many `../`
               # the path uses against how deep the manifest sits below the
@@ -1713,7 +1843,7 @@ jobs:
               done
               echo "derived clone-repos:${CO_CLONES:-<none>}"
             else
-              echo "::warning::could not fetch workspace-repos.map - no siblings derived. git said: $(tr '\n' ' ' < "$_mapdir/err" | sed 's/x-access-token:[^@]*@/x-access-token:***@/g')"
+              echo "::warning::no workspace-repos.map - no siblings derived. Pass workspace-map, or grant the checkout token read on the repo holding it. git said: $(tr '\n' ' ' < "$_mapdir/err" 2>/dev/null | sed 's/x-access-token:[^@]*@/x-access-token:***@/g')"
             fi
             rm -rf -- "$_mapdir"
           fi
