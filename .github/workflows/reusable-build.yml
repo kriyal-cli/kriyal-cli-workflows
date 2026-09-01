@@ -378,6 +378,13 @@ jobs:
         if: inputs.run-tests
         shell: bash
         working-directory: ${{ inputs.checkout-path }}
+        env:
+          # Cap the libtest harness at 6 threads. Self-hosted build boxes run
+          # one job at a time but share the machine with other work (i5 also
+          # orchestrates), and unbounded test parallelism on a many-core box
+          # oversubscribes and makes timing-sensitive tests flaky. 6 is the
+          # fleet default; libtest reads this for both invocations below.
+          RUST_TEST_THREADS: "6"
         run: |
           CRATE_FLAGS=""
           for c in ${{ inputs.target-crates }}; do CRATE_FLAGS="$CRATE_FLAGS -p $c"; done
@@ -615,6 +622,9 @@ jobs:
         if: inputs.run-tests
         shell: bash
         working-directory: ${{ inputs.checkout-path }}
+        env:
+          # See the Linux job's note - 6-thread cap, fleet default.
+          RUST_TEST_THREADS: "6"
         run: |
           CRATE_FLAGS=""
           for c in ${{ inputs.target-crates }}; do CRATE_FLAGS="$CRATE_FLAGS -p $c"; done
