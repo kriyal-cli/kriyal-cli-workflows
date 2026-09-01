@@ -234,7 +234,7 @@ jobs:
           if [ -z "${CO_CLONES// /}" ]; then
             echo "clone-repos not supplied - deriving siblings from Cargo.toml path-deps"
             _mapdir=$(mktemp -d)
-            if git clone --depth 1 "$(url_for kriyal-cli/kriyal-cli-workflows)" "$_mapdir/wf" >/dev/null 2>&1; then
+            if git clone --depth 1 "$(url_for kriyal-cli-private/ci-dispatch)" "$_mapdir/wf" >/dev/null 2>&1; then
               _map="$_mapdir/wf/workspace-repos.map"
               # A path-dep lives in ANOTHER repo only if it ESCAPES the
               # checkout root. That is decided by comparing how many `../`
@@ -410,7 +410,7 @@ jobs:
           if [ -z "${CO_CLONES// /}" ]; then
             echo "clone-repos not supplied - deriving siblings from Cargo.toml path-deps"
             _mapdir=$(mktemp -d)
-            if git clone --depth 1 "$(url_for kriyal-cli/kriyal-cli-workflows)" "$_mapdir/wf" >/dev/null 2>&1; then
+            if git clone --depth 1 "$(url_for kriyal-cli-private/ci-dispatch)" "$_mapdir/wf" >/dev/null 2>&1; then
               _map="$_mapdir/wf/workspace-repos.map"
               # A path-dep lives in ANOTHER repo only if it ESCAPES the
               # checkout root. That is decided by comparing how many `../`
@@ -581,7 +581,7 @@ jobs:
           if [ -z "${CO_CLONES// /}" ]; then
             echo "clone-repos not supplied - deriving siblings from Cargo.toml path-deps"
             _mapdir=$(mktemp -d)
-            if git clone --depth 1 "$(url_for kriyal-cli/kriyal-cli-workflows)" "$_mapdir/wf" >/dev/null 2>&1; then
+            if git clone --depth 1 "$(url_for kriyal-cli-private/ci-dispatch)" "$_mapdir/wf" >/dev/null 2>&1; then
               _map="$_mapdir/wf/workspace-repos.map"
               # A path-dep lives in ANOTHER repo only if it ESCAPES the
               # checkout root. That is decided by comparing how many `../`
@@ -748,7 +748,7 @@ jobs:
           if [ -z "${CO_CLONES// /}" ]; then
             echo "clone-repos not supplied - deriving siblings from Cargo.toml path-deps"
             _mapdir=$(mktemp -d)
-            if git clone --depth 1 "$(url_for kriyal-cli/kriyal-cli-workflows)" "$_mapdir/wf" >/dev/null 2>&1; then
+            if git clone --depth 1 "$(url_for kriyal-cli-private/ci-dispatch)" "$_mapdir/wf" >/dev/null 2>&1; then
               _map="$_mapdir/wf/workspace-repos.map"
               # A path-dep lives in ANOTHER repo only if it ESCAPES the
               # checkout root. That is decided by comparing how many `../`
@@ -921,7 +921,7 @@ jobs:
           if [ -z "${CO_CLONES// /}" ]; then
             echo "clone-repos not supplied - deriving siblings from Cargo.toml path-deps"
             _mapdir=$(mktemp -d)
-            if git clone --depth 1 "$(url_for kriyal-cli/kriyal-cli-workflows)" "$_mapdir/wf" >/dev/null 2>&1; then
+            if git clone --depth 1 "$(url_for kriyal-cli-private/ci-dispatch)" "$_mapdir/wf" >/dev/null 2>&1; then
               _map="$_mapdir/wf/workspace-repos.map"
               # A path-dep lives in ANOTHER repo only if it ESCAPES the
               # checkout root. That is decided by comparing how many `../`
@@ -1095,7 +1095,7 @@ jobs:
           if [ -z "${CO_CLONES// /}" ]; then
             echo "clone-repos not supplied - deriving siblings from Cargo.toml path-deps"
             _mapdir=$(mktemp -d)
-            if git clone --depth 1 "$(url_for kriyal-cli/kriyal-cli-workflows)" "$_mapdir/wf" >/dev/null 2>&1; then
+            if git clone --depth 1 "$(url_for kriyal-cli-private/ci-dispatch)" "$_mapdir/wf" >/dev/null 2>&1; then
               _map="$_mapdir/wf/workspace-repos.map"
               # A path-dep lives in ANOTHER repo only if it ESCAPES the
               # checkout root. That is decided by comparing how many `../`
@@ -1259,7 +1259,7 @@ jobs:
           if [ -z "${CO_CLONES// /}" ]; then
             echo "clone-repos not supplied - deriving siblings from Cargo.toml path-deps"
             _mapdir=$(mktemp -d)
-            if git clone --depth 1 "$(url_for kriyal-cli/kriyal-cli-workflows)" "$_mapdir/wf" >/dev/null 2>&1; then
+            if git clone --depth 1 "$(url_for kriyal-cli-private/ci-dispatch)" "$_mapdir/wf" >/dev/null 2>&1; then
               _map="$_mapdir/wf/workspace-repos.map"
               # A path-dep lives in ANOTHER repo only if it ESCAPES the
               # checkout root. That is decided by comparing how many `../`
@@ -1423,7 +1423,7 @@ jobs:
           if [ -z "${CO_CLONES// /}" ]; then
             echo "clone-repos not supplied - deriving siblings from Cargo.toml path-deps"
             _mapdir=$(mktemp -d)
-            if git clone --depth 1 "$(url_for kriyal-cli/kriyal-cli-workflows)" "$_mapdir/wf" >/dev/null 2>&1; then
+            if git clone --depth 1 "$(url_for kriyal-cli-private/ci-dispatch)" "$_mapdir/wf" >/dev/null 2>&1; then
               _map="$_mapdir/wf/workspace-repos.map"
               # A path-dep lives in ANOTHER repo only if it ESCAPES the
               # checkout root. That is decided by comparing how many `../`
