@@ -322,7 +322,22 @@ jobs:
               for _n in $_names; do
                 [ -n "$_n" ] || continue
                 [ "$_n" = "$CO_PATH" ] && continue
-                [ -d "$_n" ] && continue
+                # NO "already on disk, skip it" SHORTCUT HERE.
+                #
+                # A self-hosted runner keeps its workspace between builds, so
+                # siblings cloned by an earlier run are still sitting there.
+                # Skipping them meant the first build on a box cloned the
+                # siblings and every build after it compiled against whatever
+                # version happened to be on disk - green while testing stale
+                # code, which is worse than failing. Seen on kriyalci1: the
+                # windows job derived <none> while lint, in a different
+                # workdir, derived build and common-device from the same
+                # commit (run 33547873715).
+                #
+                # Whether a path-dep is EXTERNAL is already decided by the
+                # depth comparison above; the filesystem has no say in it.
+                # fresh_clone wipes and re-clones the destination, so letting
+                # the name through here is what keeps siblings current.
                 _repo=$(awk -v n="$_n" '$1 == n { print $2; exit }' "$_map")
                 if [ -z "$_repo" ]; then
                   echo "::warning::path-dep directory '$_n' is not in workspace-repos.map - not cloned. Add it there if this build needs it."
@@ -544,7 +559,22 @@ jobs:
               for _n in $_names; do
                 [ -n "$_n" ] || continue
                 [ "$_n" = "$CO_PATH" ] && continue
-                [ -d "$_n" ] && continue
+                # NO "already on disk, skip it" SHORTCUT HERE.
+                #
+                # A self-hosted runner keeps its workspace between builds, so
+                # siblings cloned by an earlier run are still sitting there.
+                # Skipping them meant the first build on a box cloned the
+                # siblings and every build after it compiled against whatever
+                # version happened to be on disk - green while testing stale
+                # code, which is worse than failing. Seen on kriyalci1: the
+                # windows job derived <none> while lint, in a different
+                # workdir, derived build and common-device from the same
+                # commit (run 33547873715).
+                #
+                # Whether a path-dep is EXTERNAL is already decided by the
+                # depth comparison above; the filesystem has no say in it.
+                # fresh_clone wipes and re-clones the destination, so letting
+                # the name through here is what keeps siblings current.
                 _repo=$(awk -v n="$_n" '$1 == n { print $2; exit }' "$_map")
                 if [ -z "$_repo" ]; then
                   echo "::warning::path-dep directory '$_n' is not in workspace-repos.map - not cloned. Add it there if this build needs it."
@@ -761,7 +791,22 @@ jobs:
               for _n in $_names; do
                 [ -n "$_n" ] || continue
                 [ "$_n" = "$CO_PATH" ] && continue
-                [ -d "$_n" ] && continue
+                # NO "already on disk, skip it" SHORTCUT HERE.
+                #
+                # A self-hosted runner keeps its workspace between builds, so
+                # siblings cloned by an earlier run are still sitting there.
+                # Skipping them meant the first build on a box cloned the
+                # siblings and every build after it compiled against whatever
+                # version happened to be on disk - green while testing stale
+                # code, which is worse than failing. Seen on kriyalci1: the
+                # windows job derived <none> while lint, in a different
+                # workdir, derived build and common-device from the same
+                # commit (run 33547873715).
+                #
+                # Whether a path-dep is EXTERNAL is already decided by the
+                # depth comparison above; the filesystem has no say in it.
+                # fresh_clone wipes and re-clones the destination, so letting
+                # the name through here is what keeps siblings current.
                 _repo=$(awk -v n="$_n" '$1 == n { print $2; exit }' "$_map")
                 if [ -z "$_repo" ]; then
                   echo "::warning::path-dep directory '$_n' is not in workspace-repos.map - not cloned. Add it there if this build needs it."
@@ -974,7 +1019,22 @@ jobs:
               for _n in $_names; do
                 [ -n "$_n" ] || continue
                 [ "$_n" = "$CO_PATH" ] && continue
-                [ -d "$_n" ] && continue
+                # NO "already on disk, skip it" SHORTCUT HERE.
+                #
+                # A self-hosted runner keeps its workspace between builds, so
+                # siblings cloned by an earlier run are still sitting there.
+                # Skipping them meant the first build on a box cloned the
+                # siblings and every build after it compiled against whatever
+                # version happened to be on disk - green while testing stale
+                # code, which is worse than failing. Seen on kriyalci1: the
+                # windows job derived <none> while lint, in a different
+                # workdir, derived build and common-device from the same
+                # commit (run 33547873715).
+                #
+                # Whether a path-dep is EXTERNAL is already decided by the
+                # depth comparison above; the filesystem has no say in it.
+                # fresh_clone wipes and re-clones the destination, so letting
+                # the name through here is what keeps siblings current.
                 _repo=$(awk -v n="$_n" '$1 == n { print $2; exit }' "$_map")
                 if [ -z "$_repo" ]; then
                   echo "::warning::path-dep directory '$_n' is not in workspace-repos.map - not cloned. Add it there if this build needs it."
@@ -1193,7 +1253,22 @@ jobs:
               for _n in $_names; do
                 [ -n "$_n" ] || continue
                 [ "$_n" = "$CO_PATH" ] && continue
-                [ -d "$_n" ] && continue
+                # NO "already on disk, skip it" SHORTCUT HERE.
+                #
+                # A self-hosted runner keeps its workspace between builds, so
+                # siblings cloned by an earlier run are still sitting there.
+                # Skipping them meant the first build on a box cloned the
+                # siblings and every build after it compiled against whatever
+                # version happened to be on disk - green while testing stale
+                # code, which is worse than failing. Seen on kriyalci1: the
+                # windows job derived <none> while lint, in a different
+                # workdir, derived build and common-device from the same
+                # commit (run 33547873715).
+                #
+                # Whether a path-dep is EXTERNAL is already decided by the
+                # depth comparison above; the filesystem has no say in it.
+                # fresh_clone wipes and re-clones the destination, so letting
+                # the name through here is what keeps siblings current.
                 _repo=$(awk -v n="$_n" '$1 == n { print $2; exit }' "$_map")
                 if [ -z "$_repo" ]; then
                   echo "::warning::path-dep directory '$_n' is not in workspace-repos.map - not cloned. Add it there if this build needs it."
@@ -1413,7 +1488,22 @@ jobs:
               for _n in $_names; do
                 [ -n "$_n" ] || continue
                 [ "$_n" = "$CO_PATH" ] && continue
-                [ -d "$_n" ] && continue
+                # NO "already on disk, skip it" SHORTCUT HERE.
+                #
+                # A self-hosted runner keeps its workspace between builds, so
+                # siblings cloned by an earlier run are still sitting there.
+                # Skipping them meant the first build on a box cloned the
+                # siblings and every build after it compiled against whatever
+                # version happened to be on disk - green while testing stale
+                # code, which is worse than failing. Seen on kriyalci1: the
+                # windows job derived <none> while lint, in a different
+                # workdir, derived build and common-device from the same
+                # commit (run 33547873715).
+                #
+                # Whether a path-dep is EXTERNAL is already decided by the
+                # depth comparison above; the filesystem has no say in it.
+                # fresh_clone wipes and re-clones the destination, so letting
+                # the name through here is what keeps siblings current.
                 _repo=$(awk -v n="$_n" '$1 == n { print $2; exit }' "$_map")
                 if [ -z "$_repo" ]; then
                   echo "::warning::path-dep directory '$_n' is not in workspace-repos.map - not cloned. Add it there if this build needs it."
@@ -1623,7 +1713,22 @@ jobs:
               for _n in $_names; do
                 [ -n "$_n" ] || continue
                 [ "$_n" = "$CO_PATH" ] && continue
-                [ -d "$_n" ] && continue
+                # NO "already on disk, skip it" SHORTCUT HERE.
+                #
+                # A self-hosted runner keeps its workspace between builds, so
+                # siblings cloned by an earlier run are still sitting there.
+                # Skipping them meant the first build on a box cloned the
+                # siblings and every build after it compiled against whatever
+                # version happened to be on disk - green while testing stale
+                # code, which is worse than failing. Seen on kriyalci1: the
+                # windows job derived <none> while lint, in a different
+                # workdir, derived build and common-device from the same
+                # commit (run 33547873715).
+                #
+                # Whether a path-dep is EXTERNAL is already decided by the
+                # depth comparison above; the filesystem has no say in it.
+                # fresh_clone wipes and re-clones the destination, so letting
+                # the name through here is what keeps siblings current.
                 _repo=$(awk -v n="$_n" '$1 == n { print $2; exit }' "$_map")
                 if [ -z "$_repo" ]; then
                   echo "::warning::path-dep directory '$_n' is not in workspace-repos.map - not cloned. Add it there if this build needs it."
@@ -1833,7 +1938,22 @@ jobs:
               for _n in $_names; do
                 [ -n "$_n" ] || continue
                 [ "$_n" = "$CO_PATH" ] && continue
-                [ -d "$_n" ] && continue
+                # NO "already on disk, skip it" SHORTCUT HERE.
+                #
+                # A self-hosted runner keeps its workspace between builds, so
+                # siblings cloned by an earlier run are still sitting there.
+                # Skipping them meant the first build on a box cloned the
+                # siblings and every build after it compiled against whatever
+                # version happened to be on disk - green while testing stale
+                # code, which is worse than failing. Seen on kriyalci1: the
+                # windows job derived <none> while lint, in a different
+                # workdir, derived build and common-device from the same
+                # commit (run 33547873715).
+                #
+                # Whether a path-dep is EXTERNAL is already decided by the
+                # depth comparison above; the filesystem has no say in it.
+                # fresh_clone wipes and re-clones the destination, so letting
+                # the name through here is what keeps siblings current.
                 _repo=$(awk -v n="$_n" '$1 == n { print $2; exit }' "$_map")
                 if [ -z "$_repo" ]; then
                   echo "::warning::path-dep directory '$_n' is not in workspace-repos.map - not cloned. Add it there if this build needs it."
