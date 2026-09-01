@@ -186,6 +186,37 @@ jobs:
             fi
           }
 
+          # ── KNOWN_HOSTS, WITHOUT WHICH EVERY SSH CLONE DIES ──────────────
+          #
+          # With no CHECKOUT_TOKEN the clones above use the SSH key the
+          # self-hosted runner already holds - that is what removed the need
+          # for a cross-org PAT. But ghrunner's known_hosts had no github.com
+          # entry, so the very first clone failed with "Host key verification
+          # failed." before authentication was even attempted.
+          #
+          # Keys are taken from GitHub's published list over TLS rather than
+          # from ssh-keyscan. keyscan trusts whatever happens to answer on
+          # port 22, so seeding from it would faithfully record the first man
+          # in the middle it met; fetching over HTTPS authenticates GitHub
+          # first. Idempotent, so it costs one API call per job and nothing
+          # else.
+          if [ -z "${CHECKOUT_TOKEN:-}" ]; then
+            mkdir -p ~/.ssh && chmod 700 ~/.ssh
+            touch ~/.ssh/known_hosts && chmod 600 ~/.ssh/known_hosts
+            if ! ssh-keygen -F github.com -f ~/.ssh/known_hosts >/dev/null 2>&1; then
+              echo "seeding github.com host keys into known_hosts"
+              if _keys=$(curl -fsSL --retry 3 https://api.github.com/meta \
+                          | grep -oE '(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp256) [A-Za-z0-9+/=]+' \
+                          | sed 's/^/github.com /') \
+                 && [ -n "$_keys" ]; then
+                printf '%s\n' "$_keys" >> ~/.ssh/known_hosts
+              else
+                echo "::error::could not fetch github.com host keys from api.github.com/meta"
+                exit 1
+              fi
+            fi
+          fi
+
           # Mirrors actions/checkout: the destination starts empty every run,
           # so a build never inherits files from a previous one. Confined to
           # the job workspace by the guards above, which is the one tree the
@@ -362,6 +393,37 @@ jobs:
             fi
           }
 
+          # ── KNOWN_HOSTS, WITHOUT WHICH EVERY SSH CLONE DIES ──────────────
+          #
+          # With no CHECKOUT_TOKEN the clones above use the SSH key the
+          # self-hosted runner already holds - that is what removed the need
+          # for a cross-org PAT. But ghrunner's known_hosts had no github.com
+          # entry, so the very first clone failed with "Host key verification
+          # failed." before authentication was even attempted.
+          #
+          # Keys are taken from GitHub's published list over TLS rather than
+          # from ssh-keyscan. keyscan trusts whatever happens to answer on
+          # port 22, so seeding from it would faithfully record the first man
+          # in the middle it met; fetching over HTTPS authenticates GitHub
+          # first. Idempotent, so it costs one API call per job and nothing
+          # else.
+          if [ -z "${CHECKOUT_TOKEN:-}" ]; then
+            mkdir -p ~/.ssh && chmod 700 ~/.ssh
+            touch ~/.ssh/known_hosts && chmod 600 ~/.ssh/known_hosts
+            if ! ssh-keygen -F github.com -f ~/.ssh/known_hosts >/dev/null 2>&1; then
+              echo "seeding github.com host keys into known_hosts"
+              if _keys=$(curl -fsSL --retry 3 https://api.github.com/meta \
+                          | grep -oE '(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp256) [A-Za-z0-9+/=]+' \
+                          | sed 's/^/github.com /') \
+                 && [ -n "$_keys" ]; then
+                printf '%s\n' "$_keys" >> ~/.ssh/known_hosts
+              else
+                echo "::error::could not fetch github.com host keys from api.github.com/meta"
+                exit 1
+              fi
+            fi
+          fi
+
           # Mirrors actions/checkout: the destination starts empty every run,
           # so a build never inherits files from a previous one. Confined to
           # the job workspace by the guards above, which is the one tree the
@@ -533,6 +595,37 @@ jobs:
             fi
           }
 
+          # ── KNOWN_HOSTS, WITHOUT WHICH EVERY SSH CLONE DIES ──────────────
+          #
+          # With no CHECKOUT_TOKEN the clones above use the SSH key the
+          # self-hosted runner already holds - that is what removed the need
+          # for a cross-org PAT. But ghrunner's known_hosts had no github.com
+          # entry, so the very first clone failed with "Host key verification
+          # failed." before authentication was even attempted.
+          #
+          # Keys are taken from GitHub's published list over TLS rather than
+          # from ssh-keyscan. keyscan trusts whatever happens to answer on
+          # port 22, so seeding from it would faithfully record the first man
+          # in the middle it met; fetching over HTTPS authenticates GitHub
+          # first. Idempotent, so it costs one API call per job and nothing
+          # else.
+          if [ -z "${CHECKOUT_TOKEN:-}" ]; then
+            mkdir -p ~/.ssh && chmod 700 ~/.ssh
+            touch ~/.ssh/known_hosts && chmod 600 ~/.ssh/known_hosts
+            if ! ssh-keygen -F github.com -f ~/.ssh/known_hosts >/dev/null 2>&1; then
+              echo "seeding github.com host keys into known_hosts"
+              if _keys=$(curl -fsSL --retry 3 https://api.github.com/meta \
+                          | grep -oE '(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp256) [A-Za-z0-9+/=]+' \
+                          | sed 's/^/github.com /') \
+                 && [ -n "$_keys" ]; then
+                printf '%s\n' "$_keys" >> ~/.ssh/known_hosts
+              else
+                echo "::error::could not fetch github.com host keys from api.github.com/meta"
+                exit 1
+              fi
+            fi
+          fi
+
           # Mirrors actions/checkout: the destination starts empty every run,
           # so a build never inherits files from a previous one. Confined to
           # the job workspace by the guards above, which is the one tree the
@@ -699,6 +792,37 @@ jobs:
               printf 'git@github.com:%s.git' "$1"
             fi
           }
+
+          # ── KNOWN_HOSTS, WITHOUT WHICH EVERY SSH CLONE DIES ──────────────
+          #
+          # With no CHECKOUT_TOKEN the clones above use the SSH key the
+          # self-hosted runner already holds - that is what removed the need
+          # for a cross-org PAT. But ghrunner's known_hosts had no github.com
+          # entry, so the very first clone failed with "Host key verification
+          # failed." before authentication was even attempted.
+          #
+          # Keys are taken from GitHub's published list over TLS rather than
+          # from ssh-keyscan. keyscan trusts whatever happens to answer on
+          # port 22, so seeding from it would faithfully record the first man
+          # in the middle it met; fetching over HTTPS authenticates GitHub
+          # first. Idempotent, so it costs one API call per job and nothing
+          # else.
+          if [ -z "${CHECKOUT_TOKEN:-}" ]; then
+            mkdir -p ~/.ssh && chmod 700 ~/.ssh
+            touch ~/.ssh/known_hosts && chmod 600 ~/.ssh/known_hosts
+            if ! ssh-keygen -F github.com -f ~/.ssh/known_hosts >/dev/null 2>&1; then
+              echo "seeding github.com host keys into known_hosts"
+              if _keys=$(curl -fsSL --retry 3 https://api.github.com/meta \
+                          | grep -oE '(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp256) [A-Za-z0-9+/=]+' \
+                          | sed 's/^/github.com /') \
+                 && [ -n "$_keys" ]; then
+                printf '%s\n' "$_keys" >> ~/.ssh/known_hosts
+              else
+                echo "::error::could not fetch github.com host keys from api.github.com/meta"
+                exit 1
+              fi
+            fi
+          fi
 
           # Mirrors actions/checkout: the destination starts empty every run,
           # so a build never inherits files from a previous one. Confined to
@@ -872,6 +996,37 @@ jobs:
               printf 'git@github.com:%s.git' "$1"
             fi
           }
+
+          # ── KNOWN_HOSTS, WITHOUT WHICH EVERY SSH CLONE DIES ──────────────
+          #
+          # With no CHECKOUT_TOKEN the clones above use the SSH key the
+          # self-hosted runner already holds - that is what removed the need
+          # for a cross-org PAT. But ghrunner's known_hosts had no github.com
+          # entry, so the very first clone failed with "Host key verification
+          # failed." before authentication was even attempted.
+          #
+          # Keys are taken from GitHub's published list over TLS rather than
+          # from ssh-keyscan. keyscan trusts whatever happens to answer on
+          # port 22, so seeding from it would faithfully record the first man
+          # in the middle it met; fetching over HTTPS authenticates GitHub
+          # first. Idempotent, so it costs one API call per job and nothing
+          # else.
+          if [ -z "${CHECKOUT_TOKEN:-}" ]; then
+            mkdir -p ~/.ssh && chmod 700 ~/.ssh
+            touch ~/.ssh/known_hosts && chmod 600 ~/.ssh/known_hosts
+            if ! ssh-keygen -F github.com -f ~/.ssh/known_hosts >/dev/null 2>&1; then
+              echo "seeding github.com host keys into known_hosts"
+              if _keys=$(curl -fsSL --retry 3 https://api.github.com/meta \
+                          | grep -oE '(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp256) [A-Za-z0-9+/=]+' \
+                          | sed 's/^/github.com /') \
+                 && [ -n "$_keys" ]; then
+                printf '%s\n' "$_keys" >> ~/.ssh/known_hosts
+              else
+                echo "::error::could not fetch github.com host keys from api.github.com/meta"
+                exit 1
+              fi
+            fi
+          fi
 
           # Mirrors actions/checkout: the destination starts empty every run,
           # so a build never inherits files from a previous one. Confined to
@@ -1047,6 +1202,37 @@ jobs:
             fi
           }
 
+          # ── KNOWN_HOSTS, WITHOUT WHICH EVERY SSH CLONE DIES ──────────────
+          #
+          # With no CHECKOUT_TOKEN the clones above use the SSH key the
+          # self-hosted runner already holds - that is what removed the need
+          # for a cross-org PAT. But ghrunner's known_hosts had no github.com
+          # entry, so the very first clone failed with "Host key verification
+          # failed." before authentication was even attempted.
+          #
+          # Keys are taken from GitHub's published list over TLS rather than
+          # from ssh-keyscan. keyscan trusts whatever happens to answer on
+          # port 22, so seeding from it would faithfully record the first man
+          # in the middle it met; fetching over HTTPS authenticates GitHub
+          # first. Idempotent, so it costs one API call per job and nothing
+          # else.
+          if [ -z "${CHECKOUT_TOKEN:-}" ]; then
+            mkdir -p ~/.ssh && chmod 700 ~/.ssh
+            touch ~/.ssh/known_hosts && chmod 600 ~/.ssh/known_hosts
+            if ! ssh-keygen -F github.com -f ~/.ssh/known_hosts >/dev/null 2>&1; then
+              echo "seeding github.com host keys into known_hosts"
+              if _keys=$(curl -fsSL --retry 3 https://api.github.com/meta \
+                          | grep -oE '(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp256) [A-Za-z0-9+/=]+' \
+                          | sed 's/^/github.com /') \
+                 && [ -n "$_keys" ]; then
+                printf '%s\n' "$_keys" >> ~/.ssh/known_hosts
+              else
+                echo "::error::could not fetch github.com host keys from api.github.com/meta"
+                exit 1
+              fi
+            fi
+          fi
+
           # Mirrors actions/checkout: the destination starts empty every run,
           # so a build never inherits files from a previous one. Confined to
           # the job workspace by the guards above, which is the one tree the
@@ -1211,6 +1397,37 @@ jobs:
             fi
           }
 
+          # ── KNOWN_HOSTS, WITHOUT WHICH EVERY SSH CLONE DIES ──────────────
+          #
+          # With no CHECKOUT_TOKEN the clones above use the SSH key the
+          # self-hosted runner already holds - that is what removed the need
+          # for a cross-org PAT. But ghrunner's known_hosts had no github.com
+          # entry, so the very first clone failed with "Host key verification
+          # failed." before authentication was even attempted.
+          #
+          # Keys are taken from GitHub's published list over TLS rather than
+          # from ssh-keyscan. keyscan trusts whatever happens to answer on
+          # port 22, so seeding from it would faithfully record the first man
+          # in the middle it met; fetching over HTTPS authenticates GitHub
+          # first. Idempotent, so it costs one API call per job and nothing
+          # else.
+          if [ -z "${CHECKOUT_TOKEN:-}" ]; then
+            mkdir -p ~/.ssh && chmod 700 ~/.ssh
+            touch ~/.ssh/known_hosts && chmod 600 ~/.ssh/known_hosts
+            if ! ssh-keygen -F github.com -f ~/.ssh/known_hosts >/dev/null 2>&1; then
+              echo "seeding github.com host keys into known_hosts"
+              if _keys=$(curl -fsSL --retry 3 https://api.github.com/meta \
+                          | grep -oE '(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp256) [A-Za-z0-9+/=]+' \
+                          | sed 's/^/github.com /') \
+                 && [ -n "$_keys" ]; then
+                printf '%s\n' "$_keys" >> ~/.ssh/known_hosts
+              else
+                echo "::error::could not fetch github.com host keys from api.github.com/meta"
+                exit 1
+              fi
+            fi
+          fi
+
           # Mirrors actions/checkout: the destination starts empty every run,
           # so a build never inherits files from a previous one. Confined to
           # the job workspace by the guards above, which is the one tree the
@@ -1374,6 +1591,37 @@ jobs:
               printf 'git@github.com:%s.git' "$1"
             fi
           }
+
+          # ── KNOWN_HOSTS, WITHOUT WHICH EVERY SSH CLONE DIES ──────────────
+          #
+          # With no CHECKOUT_TOKEN the clones above use the SSH key the
+          # self-hosted runner already holds - that is what removed the need
+          # for a cross-org PAT. But ghrunner's known_hosts had no github.com
+          # entry, so the very first clone failed with "Host key verification
+          # failed." before authentication was even attempted.
+          #
+          # Keys are taken from GitHub's published list over TLS rather than
+          # from ssh-keyscan. keyscan trusts whatever happens to answer on
+          # port 22, so seeding from it would faithfully record the first man
+          # in the middle it met; fetching over HTTPS authenticates GitHub
+          # first. Idempotent, so it costs one API call per job and nothing
+          # else.
+          if [ -z "${CHECKOUT_TOKEN:-}" ]; then
+            mkdir -p ~/.ssh && chmod 700 ~/.ssh
+            touch ~/.ssh/known_hosts && chmod 600 ~/.ssh/known_hosts
+            if ! ssh-keygen -F github.com -f ~/.ssh/known_hosts >/dev/null 2>&1; then
+              echo "seeding github.com host keys into known_hosts"
+              if _keys=$(curl -fsSL --retry 3 https://api.github.com/meta \
+                          | grep -oE '(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp256) [A-Za-z0-9+/=]+' \
+                          | sed 's/^/github.com /') \
+                 && [ -n "$_keys" ]; then
+                printf '%s\n' "$_keys" >> ~/.ssh/known_hosts
+              else
+                echo "::error::could not fetch github.com host keys from api.github.com/meta"
+                exit 1
+              fi
+            fi
+          fi
 
           # Mirrors actions/checkout: the destination starts empty every run,
           # so a build never inherits files from a previous one. Confined to
