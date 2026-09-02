@@ -34,10 +34,20 @@ on:
         required: false
         default: ""
       working-directory:
-        description: "Workspace root inside the checkout."
+        description: "Workspace root inside the checkout (set to checkout-path for central dispatch)."
         type: string
         required: false
         default: "."
+      checkout-path:
+        description: "Subdir to check the repo out into, so sibling repos can be cloned beside it and Cargo path-deps resolve. Default '.' keeps the old single-repo behaviour."
+        type: string
+        required: false
+        default: "."
+      workspace-map:
+        description: "Contents of workspace-repos.map (directory -> owner/repo), passed by verify-dispatch. Empty = no sibling derivation (self-contained workspace)."
+        type: string
+        required: false
+        default: ""
       runs-on:
         description: "Single runner label (back-compat). Prefer `runner` for a JSON array chosen by the dashboard broker."
         type: string
@@ -82,6 +92,11 @@ on:
       kani-packages:
         description: "JSON array of packages carrying Kani harnesses."
         value: ${{ jobs.discover.outputs.packages }}
+    secrets:
+      CHECKOUT_TOKEN:
+        # Cross-org private checkout + sibling clones. On a self-hosted runner
+        # this can be unset - the runner's own SSH key clones instead.
+        required: false
 
 permissions:
   contents: read
@@ -119,6 +134,46 @@ jobs:
         with:
           repository: ${{ inputs.checkout-repo }}
           ref: ${{ inputs.checkout-ref }}
+          path: ${{ inputs.checkout-path }}
+          token: ${{ secrets.CHECKOUT_TOKEN || github.token }}
+      - name: Clone sibling repos (multi-repo workspaces)
+        shell: bash
+        env:
+          CHECKOUT_TOKEN: ${{ secrets.CHECKOUT_TOKEN }}
+          CO_PATH: ${{ inputs.checkout-path }}
+          WORKSPACE_MAP: ${{ inputs.workspace-map }}
+        run: |
+          set -uo pipefail
+          # A path-dep lives in ANOTHER repo only if it ESCAPES the checkout
+          # root (../ count > how deep the manifest sits). The map turns the
+          # escaping directory name into owner/repo. Same logic as
+          # reusable-build; keeps deep/clippy resolvable on multi-repo trees.
+          [ -n "${WORKSPACE_MAP:-}" ] || { echo "no workspace-map - single-repo verify"; exit 0; }
+          _map="$(mktemp)"; printf '%s\n' "$WORKSPACE_MAP" > "$_map"
+          url_for() {
+            if [ -n "${CHECKOUT_TOKEN:-}" ]; then printf 'https://x-access-token:%s@github.com/%s.git' "$CHECKOUT_TOKEN" "$1"
+            else printf 'git@github.com:%s.git' "$1"; fi
+          }
+          _names=$(
+            while IFS= read -r _m; do
+              _dir=$(dirname "$_m"); _rel="${_dir#"$CO_PATH"}"; _rel="${_rel#/}"
+              if [ -z "$_rel" ]; then _depth=0; else _depth=$(awk -F/ '{print NF}' <<<"$_rel"); fi
+              while IFS= read -r _p; do
+                case "$_p" in ../*) ;; *) continue ;; esac
+                _ups=$(grep -o '\.\./' <<<"$_p" | wc -l | tr -d ' ')
+                [ "$_ups" -le "$_depth" ] && continue
+                sed -E 's#^(\.\./)+##' <<<"$_p" | cut -d/ -f1
+              done < <(grep -oE 'path[[:space:]]*=[[:space:]]*"[^"]+"' "$_m" 2>/dev/null | sed -E 's/.*"([^"]+)"/\1/')
+            done < <(find "$CO_PATH" -name Cargo.toml -not -path '*/target/*') | sort -u
+          )
+          for _n in $_names; do
+            [ -n "$_n" ] || continue
+            [ "$_n" = "$CO_PATH" ] && continue
+            [ -d "$_n" ] && continue
+            _repo=$(awk -v n="$_n" '$1 == n { print $2; exit }' "$_map")
+            if [ -z "$_repo" ]; then echo "::warning::path-dep '$_n' not in workspace-repos.map - not cloned"; continue; fi
+            git clone --depth 1 "$(url_for "$_repo")" "$_n" && echo "cloned sibling $_repo -> $_n"
+          done
 
       # ── rustup MAY NOT EXIST ON A SELF-HOSTED RUNNER ──────────────────
       #
@@ -243,6 +298,46 @@ jobs:
         with:
           repository: ${{ inputs.checkout-repo }}
           ref: ${{ inputs.checkout-ref }}
+          path: ${{ inputs.checkout-path }}
+          token: ${{ secrets.CHECKOUT_TOKEN || github.token }}
+      - name: Clone sibling repos (multi-repo workspaces)
+        shell: bash
+        env:
+          CHECKOUT_TOKEN: ${{ secrets.CHECKOUT_TOKEN }}
+          CO_PATH: ${{ inputs.checkout-path }}
+          WORKSPACE_MAP: ${{ inputs.workspace-map }}
+        run: |
+          set -uo pipefail
+          # A path-dep lives in ANOTHER repo only if it ESCAPES the checkout
+          # root (../ count > how deep the manifest sits). The map turns the
+          # escaping directory name into owner/repo. Same logic as
+          # reusable-build; keeps deep/clippy resolvable on multi-repo trees.
+          [ -n "${WORKSPACE_MAP:-}" ] || { echo "no workspace-map - single-repo verify"; exit 0; }
+          _map="$(mktemp)"; printf '%s\n' "$WORKSPACE_MAP" > "$_map"
+          url_for() {
+            if [ -n "${CHECKOUT_TOKEN:-}" ]; then printf 'https://x-access-token:%s@github.com/%s.git' "$CHECKOUT_TOKEN" "$1"
+            else printf 'git@github.com:%s.git' "$1"; fi
+          }
+          _names=$(
+            while IFS= read -r _m; do
+              _dir=$(dirname "$_m"); _rel="${_dir#"$CO_PATH"}"; _rel="${_rel#/}"
+              if [ -z "$_rel" ]; then _depth=0; else _depth=$(awk -F/ '{print NF}' <<<"$_rel"); fi
+              while IFS= read -r _p; do
+                case "$_p" in ../*) ;; *) continue ;; esac
+                _ups=$(grep -o '\.\./' <<<"$_p" | wc -l | tr -d ' ')
+                [ "$_ups" -le "$_depth" ] && continue
+                sed -E 's#^(\.\./)+##' <<<"$_p" | cut -d/ -f1
+              done < <(grep -oE 'path[[:space:]]*=[[:space:]]*"[^"]+"' "$_m" 2>/dev/null | sed -E 's/.*"([^"]+)"/\1/')
+            done < <(find "$CO_PATH" -name Cargo.toml -not -path '*/target/*') | sort -u
+          )
+          for _n in $_names; do
+            [ -n "$_n" ] || continue
+            [ "$_n" = "$CO_PATH" ] && continue
+            [ -d "$_n" ] && continue
+            _repo=$(awk -v n="$_n" '$1 == n { print $2; exit }' "$_map")
+            if [ -z "$_repo" ]; then echo "::warning::path-dep '$_n' not in workspace-repos.map - not cloned"; continue; fi
+            git clone --depth 1 "$(url_for "$_repo")" "$_n" && echo "cloned sibling $_repo -> $_n"
+          done
       - id: d
         uses: kriyal-cli/kriyal-cli-workflows/.github/actions/kani-discover@main
         with:
@@ -262,6 +357,46 @@ jobs:
         with:
           repository: ${{ inputs.checkout-repo }}
           ref: ${{ inputs.checkout-ref }}
+          path: ${{ inputs.checkout-path }}
+          token: ${{ secrets.CHECKOUT_TOKEN || github.token }}
+      - name: Clone sibling repos (multi-repo workspaces)
+        shell: bash
+        env:
+          CHECKOUT_TOKEN: ${{ secrets.CHECKOUT_TOKEN }}
+          CO_PATH: ${{ inputs.checkout-path }}
+          WORKSPACE_MAP: ${{ inputs.workspace-map }}
+        run: |
+          set -uo pipefail
+          # A path-dep lives in ANOTHER repo only if it ESCAPES the checkout
+          # root (../ count > how deep the manifest sits). The map turns the
+          # escaping directory name into owner/repo. Same logic as
+          # reusable-build; keeps deep/clippy resolvable on multi-repo trees.
+          [ -n "${WORKSPACE_MAP:-}" ] || { echo "no workspace-map - single-repo verify"; exit 0; }
+          _map="$(mktemp)"; printf '%s\n' "$WORKSPACE_MAP" > "$_map"
+          url_for() {
+            if [ -n "${CHECKOUT_TOKEN:-}" ]; then printf 'https://x-access-token:%s@github.com/%s.git' "$CHECKOUT_TOKEN" "$1"
+            else printf 'git@github.com:%s.git' "$1"; fi
+          }
+          _names=$(
+            while IFS= read -r _m; do
+              _dir=$(dirname "$_m"); _rel="${_dir#"$CO_PATH"}"; _rel="${_rel#/}"
+              if [ -z "$_rel" ]; then _depth=0; else _depth=$(awk -F/ '{print NF}' <<<"$_rel"); fi
+              while IFS= read -r _p; do
+                case "$_p" in ../*) ;; *) continue ;; esac
+                _ups=$(grep -o '\.\./' <<<"$_p" | wc -l | tr -d ' ')
+                [ "$_ups" -le "$_depth" ] && continue
+                sed -E 's#^(\.\./)+##' <<<"$_p" | cut -d/ -f1
+              done < <(grep -oE 'path[[:space:]]*=[[:space:]]*"[^"]+"' "$_m" 2>/dev/null | sed -E 's/.*"([^"]+)"/\1/')
+            done < <(find "$CO_PATH" -name Cargo.toml -not -path '*/target/*') | sort -u
+          )
+          for _n in $_names; do
+            [ -n "$_n" ] || continue
+            [ "$_n" = "$CO_PATH" ] && continue
+            [ -d "$_n" ] && continue
+            _repo=$(awk -v n="$_n" '$1 == n { print $2; exit }' "$_map")
+            if [ -z "$_repo" ]; then echo "::warning::path-dep '$_n' not in workspace-repos.map - not cloned"; continue; fi
+            git clone --depth 1 "$(url_for "$_repo")" "$_n" && echo "cloned sibling $_repo -> $_n"
+          done
 
       # Cache the VERDICT, not just the build: keyed on the lockfile + the
       # crate's sources, so an untouched crate is skipped entirely. `nightly`
@@ -305,6 +440,46 @@ jobs:
         with:
           repository: ${{ inputs.checkout-repo }}
           ref: ${{ inputs.checkout-ref }}
+          path: ${{ inputs.checkout-path }}
+          token: ${{ secrets.CHECKOUT_TOKEN || github.token }}
+      - name: Clone sibling repos (multi-repo workspaces)
+        shell: bash
+        env:
+          CHECKOUT_TOKEN: ${{ secrets.CHECKOUT_TOKEN }}
+          CO_PATH: ${{ inputs.checkout-path }}
+          WORKSPACE_MAP: ${{ inputs.workspace-map }}
+        run: |
+          set -uo pipefail
+          # A path-dep lives in ANOTHER repo only if it ESCAPES the checkout
+          # root (../ count > how deep the manifest sits). The map turns the
+          # escaping directory name into owner/repo. Same logic as
+          # reusable-build; keeps deep/clippy resolvable on multi-repo trees.
+          [ -n "${WORKSPACE_MAP:-}" ] || { echo "no workspace-map - single-repo verify"; exit 0; }
+          _map="$(mktemp)"; printf '%s\n' "$WORKSPACE_MAP" > "$_map"
+          url_for() {
+            if [ -n "${CHECKOUT_TOKEN:-}" ]; then printf 'https://x-access-token:%s@github.com/%s.git' "$CHECKOUT_TOKEN" "$1"
+            else printf 'git@github.com:%s.git' "$1"; fi
+          }
+          _names=$(
+            while IFS= read -r _m; do
+              _dir=$(dirname "$_m"); _rel="${_dir#"$CO_PATH"}"; _rel="${_rel#/}"
+              if [ -z "$_rel" ]; then _depth=0; else _depth=$(awk -F/ '{print NF}' <<<"$_rel"); fi
+              while IFS= read -r _p; do
+                case "$_p" in ../*) ;; *) continue ;; esac
+                _ups=$(grep -o '\.\./' <<<"$_p" | wc -l | tr -d ' ')
+                [ "$_ups" -le "$_depth" ] && continue
+                sed -E 's#^(\.\./)+##' <<<"$_p" | cut -d/ -f1
+              done < <(grep -oE 'path[[:space:]]*=[[:space:]]*"[^"]+"' "$_m" 2>/dev/null | sed -E 's/.*"([^"]+)"/\1/')
+            done < <(find "$CO_PATH" -name Cargo.toml -not -path '*/target/*') | sort -u
+          )
+          for _n in $_names; do
+            [ -n "$_n" ] || continue
+            [ "$_n" = "$CO_PATH" ] && continue
+            [ -d "$_n" ] && continue
+            _repo=$(awk -v n="$_n" '$1 == n { print $2; exit }' "$_map")
+            if [ -z "$_repo" ]; then echo "::warning::path-dep '$_n' not in workspace-repos.map - not cloned"; continue; fi
+            git clone --depth 1 "$(url_for "$_repo")" "$_n" && echo "cloned sibling $_repo -> $_n"
+          done
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: ${{ inputs.working-directory }}
