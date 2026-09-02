@@ -39,10 +39,15 @@ on:
         required: false
         default: "."
       runs-on:
-        description: "Runner label (set a self-hosted label to move CI off hosted minutes)."
+        description: "Single runner label (back-compat). Prefer `runner` for a JSON array chosen by the dashboard broker."
         type: string
         required: false
         default: ubuntu-latest
+      runner:
+        description: 'JSON array of runner labels, e.g. ["self-hosted","linux"], chosen by gh-runner-dashboard so nightly verify lands on a FREE runner via the single queue - not pinned to one org. Empty falls back to `runs-on`.'
+        type: string
+        required: false
+        default: ""
       rust-toolchain:
         description: "Toolchain for fmt/clippy; empty honours rust-toolchain.toml."
         type: string
@@ -108,7 +113,7 @@ jobs:
   # ---------------------------------------------------------------- fast tier
   lint:
     name: "fmt + clippy + artefacts"
-    runs-on: ${{ inputs.runs-on }}
+    runs-on: ${{ inputs.runner != '' && fromJSON(inputs.runner) || inputs.runs-on }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -229,7 +234,7 @@ jobs:
   discover:
     name: "discover Kani harnesses"
     if: ${{ inputs.tier != 'fast' }}
-    runs-on: ${{ inputs.runs-on }}
+    runs-on: ${{ inputs.runner != '' && fromJSON(inputs.runner) || inputs.runs-on }}
     outputs:
       packages: ${{ steps.d.outputs.packages }}
       count: ${{ steps.d.outputs.count }}
@@ -247,7 +252,7 @@ jobs:
     name: "kani: ${{ matrix.package }}"
     needs: discover
     if: ${{ inputs.tier != 'fast' && needs.discover.outputs.count != '0' }}
-    runs-on: ${{ inputs.runs-on }}
+    runs-on: ${{ inputs.runner != '' && fromJSON(inputs.runner) || inputs.runs-on }}
     strategy:
       fail-fast: false
       matrix:
@@ -293,7 +298,7 @@ jobs:
   geiger:
     name: "unsafe surface (geiger)"
     if: ${{ inputs.tier != 'fast' && inputs.geiger }}
-    runs-on: ${{ inputs.runs-on }}
+    runs-on: ${{ inputs.runner != '' && fromJSON(inputs.runner) || inputs.runs-on }}
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
