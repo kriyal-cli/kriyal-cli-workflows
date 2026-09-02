@@ -267,7 +267,7 @@ jobs:
       # crate's sources, so an untouched crate is skipped entirely. `nightly`
       # writes a key nothing restores, which is how it stays cold.
       - id: verdict
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ inputs.working-directory }}/.kani-verdict-${{ matrix.package }}
           key: kani-${{ matrix.package }}-${{ inputs.tier == 'nightly' && github.run_id || hashFiles(format('{0}/**/Cargo.lock', inputs.working-directory), format('{0}/**/*.rs', inputs.working-directory)) }}
