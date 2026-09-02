@@ -318,7 +318,7 @@ jobs:
           # exit code. A consumer turns it into a pass/fail claim.
           cargo geiger --output-format Json > geiger.json || true
           python3 -c 'import json,sys; d=json.load(open("geiger.json")); print("packages:", len(d.get("packages", d if isinstance(d,list) else [])))' || true
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: geiger-json
           path: ${{ inputs.working-directory }}/geiger.json
