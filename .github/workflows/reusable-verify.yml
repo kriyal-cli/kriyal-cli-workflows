@@ -83,6 +83,11 @@ on:
         type: boolean
         required: false
         default: true
+      kani-flags:
+        description: "Extra flags appended to `cargo kani -p <package>` (e.g. \"-Z stubbing -Z unstable-options\" for a repo whose harnesses use #[kani::stub(...)]). Empty by default -- no behavior change for callers that don't set it."
+        type: string
+        required: false
+        default: ""
       geiger:
         description: "In deep/nightly, run cargo geiger and upload its JSON."
         type: boolean
@@ -411,6 +416,11 @@ jobs:
         if: ${{ steps.verdict.outputs.cache-hit != 'true' }}
         run: |
           set -euo pipefail
+          # A crate whose build.rs compiles .proto files (e.g. a dependency
+          # on lance-encoding) needs protoc present before `cargo kani`
+          # builds it -- same install-if-missing pattern as shellcheck
+          # above, unconditional and idempotent for repos that never need it.
+          command -v protoc >/dev/null || sudo apt-get install -y --no-install-recommends protobuf-compiler
           cargo install --locked kani-verifier
           cargo kani setup
 
@@ -419,7 +429,11 @@ jobs:
         working-directory: ${{ inputs.working-directory }}
         run: |
           set -o pipefail
-          if cargo kani -p "${{ matrix.package }}" 2>&1 | tee kani.log; then
+          # `inputs.kani-flags` is intentionally unquoted below: empty by
+          # default (no-op for callers that don't set it), and when set
+          # (e.g. "-Z stubbing -Z unstable-options") it must word-split
+          # into separate cargo args, not pass through as one literal.
+          if cargo kani -p "${{ matrix.package }}" ${{ inputs.kani-flags }} 2>&1 | tee kani.log; then
             echo "verified ${{ matrix.package }}" > ".kani-verdict-${{ matrix.package }}"
           else
             grep -E 'VERIFICATION:- FAILED|^error' kani.log | head -40 || true
