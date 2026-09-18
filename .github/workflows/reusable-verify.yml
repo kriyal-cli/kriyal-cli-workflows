@@ -5,14 +5,29 @@
 # in the caller's own org that chains after this one.
 #
 # TIERS
-#   fast    fmt + clippy + artifact audit + dependency hygiene   (every push)
-#   deep    + Kani proofs (one job per discovered crate) + geiger, cache-gated
+#   fast    fmt + clippy + artifact audit + dependency hygiene (tree -d, deny
+#           bans advisory; machete + udeps HARD by default) + cargo audit
+#           (RUSTSEC/CVE scan, HARD by default)                (every push)
+#   deep    + Kani proofs (one job per discovered crate) + geiger + miri
+#           (report-only by default — see miri-enforce) + semver-checks
+#           (advisory), cache-gated
 #   nightly  deep with the cache disabled — a cache is an assumption, and the
 #            nightly is where assumptions get checked
 #
 # The cache is what makes `deep` affordable: a crate's proof verdict and a
 # workspace's unsafe totals are pure functions of (sources | lockfile) plus the
 # toolchain versions, so an unchanged subject replays instead of re-running.
+#
+# HARD vs advisory, and why: fmt/clippy/machete/udeps/audit are deterministic
+# and first-party-fixable with no documented false-positive class specific to
+# THIS codebase, so they gate the run by default. Kani is HARD only where a
+# crate actually carries `#[kani::proof]` harnesses (an empty repo is
+# unaffected). Miri defaults to report-only because it cannot execute FFI or
+# most syscalls — a workspace with native/GPU/NPU bindings will show
+# unsupported-operation aborts that are not real UB findings; opt a specific
+# crate in via `miri-package` once it is confirmed Miri-clean. semver-checks
+# is always advisory: a missing or unreachable baseline rev is common and is
+# not itself a semver violation.
 name: Reusable verify
 
 on:
@@ -74,7 +89,17 @@ on:
         required: false
         default: true
       dependency-hygiene:
-        description: "cargo tree -d / cargo deny check bans / cargo machete (advisory)."
+        description: "cargo tree -d / cargo deny check bans (advisory)."
+        type: boolean
+        required: false
+        default: true
+      machete-enforce:
+        description: "Fail the run when cargo machete finds an unused dependency."
+        type: boolean
+        required: false
+        default: true
+      udeps-enforce:
+        description: "Fail the run when cargo +nightly udeps finds an unused dependency. udeps has a documented false-positive class (macro-only / cfg-gated usage) that machete does not share -- set false to downgrade to report-only for a repo that hits it."
         type: boolean
         required: false
         default: true
@@ -88,6 +113,42 @@ on:
         type: boolean
         required: false
         default: true
+      audit-ignore:
+        description: "Comma-separated RUSTSEC ids to ignore in cargo audit (e.g. an advisory with no upstream fix yet)."
+        type: string
+        required: false
+        default: ""
+      audit-enforce:
+        description: "Fail the run when cargo audit finds an un-ignored RUSTSEC advisory. CVE scanning has no documented false-positive class the way udeps does, so this defaults on."
+        type: boolean
+        required: false
+        default: true
+      miri-enforce:
+        description: >-
+          In deep/nightly, fail the run when `cargo +nightly miri test` finds
+          undefined behaviour. Defaults OFF (report-only): Miri cannot execute
+          FFI or most syscalls, so a workspace with GPU/NPU backends or native
+          bindings will show unsupported-operation aborts that are not real
+          UB findings. Flip on per-crate by scoping `miri-package` once a
+          crate is confirmed Miri-clean.
+        type: boolean
+        required: false
+        default: false
+      miri-package:
+        description: "Space-separated `-p` package list for cargo miri (empty = --workspace, which is unlikely to be clean in a repo with native/FFI crates)."
+        type: string
+        required: false
+        default: ""
+      semver-checks:
+        description: "Run cargo-semver-checks against semver-baseline-rev (advisory: never fails the run — a missing/unreachable baseline is common and is not itself a semver violation)."
+        type: boolean
+        required: false
+        default: true
+      semver-baseline-rev:
+        description: "Git rev to diff the public API against (e.g. the PR base SHA, or a released tag). Empty = skip, since there is nothing to diff against."
+        type: string
+        required: false
+        default: ""
     outputs:
       kani-packages:
         description: "JSON array of packages carrying Kani harnesses."
@@ -284,6 +345,97 @@ jobs:
             | awk '{c[$1]++; v[$1]=v[$1]" "$2} END {for (n in c) if (c[n]>1) print n":"v[n]}'
           cargo install --locked cargo-deny >/dev/null 2>&1 || true
           if [ -f deny.toml ]; then cargo deny check bans || true; fi
+
+      # HARD by default (inputs.machete-enforce) — unlike tree -d/deny bans
+      # above, an unused dependency is a deterministic, first-party-fixable
+      # finding with no documented false-positive class.
+      - name: "cargo machete (unused dependencies)"
+        if: ${{ inputs.dependency-hygiene }}
+        continue-on-error: ${{ !inputs.machete-enforce }}
+        working-directory: ${{ inputs.working-directory }}
+        run: |
+          set -uo pipefail
+          cargo install --locked cargo-machete >/dev/null 2>&1 || true
+          command -v cargo-machete >/dev/null 2>&1 || { echo "::warning::cargo-machete failed to install — skipping"; exit 0; }
+          cargo machete
+
+      # udeps needs the nightly toolchain regardless of what fmt/clippy use.
+      # udeps-enforce defaults on (see input description for the caveat) —
+      # a repo that hits udeps's macro/cfg false-positive class should flip
+      # it off rather than have every PR fight a tool it cannot satisfy.
+      - name: "cargo +nightly udeps (unused dependencies)"
+        if: ${{ inputs.dependency-hygiene }}
+        continue-on-error: ${{ !inputs.udeps-enforce }}
+        working-directory: ${{ inputs.working-directory }}
+        run: |
+          set -uo pipefail
+          rustup toolchain install nightly --profile minimal >/dev/null 2>&1
+          cargo install --locked cargo-udeps >/dev/null 2>&1 || true
+          command -v cargo-udeps >/dev/null 2>&1 || { echo "::warning::cargo-udeps failed to install — skipping"; exit 0; }
+          cargo +nightly udeps --workspace --all-targets
+
+  # ---------------------------------------------------------------- fast tier
+  security:
+    name: "cargo audit (RUSTSEC/CVE scan)"
+    runs-on: ${{ inputs.runner != '' && fromJSON(inputs.runner) || inputs.runs-on }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ inputs.checkout-repo }}
+          ref: ${{ inputs.checkout-ref }}
+          path: ${{ inputs.checkout-path }}
+          token: ${{ secrets.CHECKOUT_TOKEN || github.token }}
+
+      - name: Ensure rustup is available
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v rustup >/dev/null 2>&1; then exit 0; fi
+          if [ "${RUNNER_OS:-}" = "Windows" ]; then
+            curl -sSfLo rustup-init.exe https://win.rustup.rs/x86_64
+            ./rustup-init.exe -y --default-toolchain stable --profile minimal
+            rm -f rustup-init.exe
+            printf '%s\\.cargo\\bin\n' "$USERPROFILE" >> "$GITHUB_PATH"
+          else
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+              | sh -s -- -y --default-toolchain stable --profile minimal
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          fi
+
+      - uses: actions/cache@v6
+        id: audit-cache
+        with:
+          path: ~/.cargo/bin/cargo-audit*
+          key: cargo-audit-${{ runner.os }}
+
+      - name: Install cargo-audit (cache miss only)
+        if: steps.audit-cache.outputs.cache-hit != 'true'
+        run: cargo install --locked cargo-audit
+
+      # No workspace/no Cargo.lock is a real, common shape here (an
+      # org-split checkout with no root manifest) — that is "nothing to
+      # scan", not a failure, mirroring build.py's SecurityChecker.check_audit.
+      - name: "cargo audit"
+        working-directory: ${{ inputs.working-directory }}
+        run: |
+          set -uo pipefail
+          if [ ! -f Cargo.toml ]; then
+            echo "no Cargo.toml in ${{ inputs.working-directory }} — nothing to audit"
+            exit 0
+          fi
+          IGNORE_ARGS=()
+          IFS=',' read -ra IDS <<< "${{ inputs.audit-ignore }}"
+          for id in "${IDS[@]}"; do
+            id="$(echo "$id" | xargs)"
+            [ -n "$id" ] && IGNORE_ARGS+=(--ignore "$id")
+          done
+          if cargo audit "${IGNORE_ARGS[@]}"; then
+            echo "no un-ignored RUSTSEC advisories"
+          elif [ "${{ inputs.audit-enforce }}" = "true" ]; then
+            exit 1
+          else
+            echo "::warning::cargo audit found advisories but audit-enforce is false — not failing the run"
+          fi
 
   # ------------------------------------------------- deep / nightly discovery
   discover:
@@ -498,3 +650,104 @@ jobs:
           name: geiger-json
           path: ${{ inputs.working-directory }}/geiger.json
           if-no-files-found: warn
+
+  miri:
+    name: "cargo +nightly miri test"
+    if: ${{ inputs.tier != 'fast' }}
+    runs-on: ${{ inputs.runner != '' && fromJSON(inputs.runner) || inputs.runs-on }}
+    # miri-enforce defaults false (see the input's description) — this job
+    # itself must not go red fleet-wide the day it is introduced, so the
+    # continue-on-error is on the STEP, not a skip of the job: the report
+    # still runs and uploads, only the pass/fail verdict is muted by default.
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ inputs.checkout-repo }}
+          ref: ${{ inputs.checkout-ref }}
+          path: ${{ inputs.checkout-path }}
+          token: ${{ secrets.CHECKOUT_TOKEN || github.token }}
+      - name: Clone sibling repos (multi-repo workspaces)
+        shell: bash
+        env:
+          CHECKOUT_TOKEN: ${{ secrets.CHECKOUT_TOKEN }}
+          CO_PATH: ${{ inputs.checkout-path }}
+          WORKSPACE_MAP: ${{ inputs.workspace-map }}
+        run: |
+          set -uo pipefail
+          [ -n "${WORKSPACE_MAP:-}" ] || { echo "no workspace-map - single-repo verify"; exit 0; }
+          _map="$(mktemp)"; printf '%s\n' "$WORKSPACE_MAP" > "$_map"
+          url_for() {
+            if [ -n "${CHECKOUT_TOKEN:-}" ]; then printf 'https://x-access-token:%s@github.com/%s.git' "$CHECKOUT_TOKEN" "$1"
+            else printf 'git@github.com:%s.git' "$1"; fi
+          }
+          _names=$(
+            while IFS= read -r _m; do
+              _dir=$(dirname "$_m"); _rel="${_dir#"$CO_PATH"}"; _rel="${_rel#/}"
+              if [ -z "$_rel" ]; then _depth=0; else _depth=$(awk -F/ '{print NF}' <<<"$_rel"); fi
+              while IFS= read -r _p; do
+                case "$_p" in ../*) ;; *) continue ;; esac
+                _ups=$(grep -o '\.\./' <<<"$_p" | wc -l | tr -d ' ')
+                [ "$_ups" -le "$_depth" ] && continue
+                sed -E 's#^(\.\./)+##' <<<"$_p" | cut -d/ -f1
+              done < <(grep -oE 'path[[:space:]]*=[[:space:]]*"[^"]+"' "$_m" 2>/dev/null | sed -E 's/.*"([^"]+)"/\1/')
+            done < <(find "$CO_PATH" -name Cargo.toml -not -path '*/target/*') | sort -u
+          )
+          for _n in $_names; do
+            [ -n "$_n" ] || continue
+            [ "$_n" = "$CO_PATH" ] && continue
+            [ -d "$_n" ] && continue
+            _repo=$(awk -v n="$_n" '$1 == n { print $2; exit }' "$_map")
+            if [ -z "$_repo" ]; then echo "::warning::path-dep '$_n' not in workspace-repos.map - not cloned"; continue; fi
+            git clone --depth 1 "$(url_for "$_repo")" "$_n" && echo "cloned sibling $_repo -> $_n"
+          done
+      - name: Install nightly + miri
+        run: |
+          set -euo pipefail
+          rustup toolchain install nightly --profile minimal --component miri
+          rustup +nightly component add miri
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ inputs.working-directory }}
+          key: miri
+      - name: "cargo +nightly miri test"
+        id: miri
+        continue-on-error: ${{ !inputs.miri-enforce }}
+        working-directory: ${{ inputs.working-directory }}
+        run: |
+          set -o pipefail
+          PKG_ARGS=()
+          for p in ${{ inputs.miri-package }}; do PKG_ARGS+=(-p "$p"); done
+          if [ "${#PKG_ARGS[@]}" -eq 0 ]; then PKG_ARGS=(--workspace); fi
+          cargo +nightly miri test "${PKG_ARGS[@]}" 2>&1 | tee miri.log
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: miri-log
+          path: ${{ inputs.working-directory }}/miri.log
+          if-no-files-found: warn
+
+  semver-checks:
+    name: "cargo semver-checks (advisory)"
+    if: ${{ inputs.tier != 'fast' && inputs.semver-checks && inputs.semver-baseline-rev != '' }}
+    runs-on: ${{ inputs.runner != '' && fromJSON(inputs.runner) || inputs.runs-on }}
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ inputs.checkout-repo }}
+          ref: ${{ inputs.checkout-ref }}
+          path: ${{ inputs.checkout-path }}
+          token: ${{ secrets.CHECKOUT_TOKEN || github.token }}
+          fetch-depth: 0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ inputs.working-directory }}
+      - name: Install cargo-semver-checks
+        run: cargo install --locked cargo-semver-checks || true
+      - name: "cargo semver-checks against ${{ inputs.semver-baseline-rev }}"
+        working-directory: ${{ inputs.working-directory }}
+        run: |
+          set -uo pipefail
+          command -v cargo-semver-checks >/dev/null 2>&1 || { echo "::warning::cargo-semver-checks failed to install — skipping"; exit 0; }
+          cargo semver-checks check-release --baseline-rev "${{ inputs.semver-baseline-rev }}" || \
+            echo "::warning::cargo-semver-checks reported a possible breaking change or could not resolve the baseline — advisory only, see log above"
