@@ -109,6 +109,16 @@ on:
         required: false
         type: string
         default: ''
+      nightly-health-repo:
+        description: 'OPTIONAL. owner/repo of a workflow whose latest run conclusion gates whether the lint job''s clippy/fmt failures block merge - e.g. a caller''s own fleet-wide nightly sweep. This is a PUBLIC repo: do not hardcode a private repo/org name here. Empty (default) skips the check entirely and always enforces lint normally, which is correct for any caller that does not set this.'
+        required: false
+        type: string
+        default: ''
+      nightly-health-workflow:
+        description: 'Workflow file name (e.g. nightly-verify.yml) in nightly-health-repo to read the latest run conclusion from. Ignored if nightly-health-repo is empty.'
+        required: false
+        type: string
+        default: ''
     secrets:
       CHECKOUT_TOKEN:
         description: 'OPTIONAL. Token with read access to checkout-repo and every repo in clone-repos. Needed only on GitHub-HOSTED runners, which have no credentials of their own. On a self-hosted runner leave it unset: the checkout step below clones over SSH with the key that runner already holds, which is how claude-review.yml has always authenticated. Making this required meant central dispatch could not work at all until somebody minted a cross-org PAT.'
@@ -1075,35 +1085,48 @@ jobs:
         with: { components: 'rustfmt, clippy' }
       - uses: Swatinem/rust-cache@v2
         with: { workspaces: '${{ inputs.checkout-path }}' }
-      # Whether the fleet-wide --fmt --deep nightly sweep (nightly-verify.yml
-      # in kriyal-cli-private/ci-rules) is currently green. While it is red
-      # on real, pre-existing issues (operator directive, 2026-10-10), a
-      # single PR's lint failures should not block it from merging on top of
-      # a fleet that is already known-broken for unrelated reasons - "same
-      # result as nightly" was the explicit ask. The moment nightly goes
-      # green again, this job's own failures start blocking merges normally
-      # with NO further change needed here - it re-derives the answer fresh
-      # every run rather than needing a manual flip back.
+      # Whether a caller-named fleet-wide nightly sweep is currently green.
+      # This file is PUBLIC - nightly-health-repo/nightly-health-workflow
+      # are empty by default (every existing caller: unaffected, still
+      # enforces lint normally) and only a caller that sets them (e.g. a
+      # private build-dispatch.yml naming its own private nightly workflow)
+      # opts in. Never hardcode an org/repo name in this file for this -
+      # that is exactly the leak these inputs exist to avoid.
+      #
+      # While it is red, a single PR's lint failures should not block it
+      # from merging on top of a fleet that is already known-broken for
+      # unrelated reasons - "same result as nightly" is the intent. The
+      # moment nightly goes green again, this job's own failures start
+      # blocking merges normally with NO further change needed here - it
+      # re-derives the answer fresh every run rather than needing a manual
+      # flip back.
       #
       # FAILS CLOSED: any error reading nightly's status (bad token, API
       # outage, no runs yet) is treated as healthy=true, i.e. still enforce.
       # A broken health check must never silently turn into a disabled gate.
-      - name: Check nightly-verify health
+      - name: Check caller-named nightly health
         id: nightly-health
         env:
           GH_TOKEN: ${{ secrets.CHECKOUT_TOKEN }}
+          HEALTH_REPO: ${{ inputs.nightly-health-repo }}
+          HEALTH_WORKFLOW: ${{ inputs.nightly-health-workflow }}
         run: |
-          conclusion=$(gh api repos/kriyal-cli-private/ci-rules/actions/workflows/nightly-verify.yml/runs \
+          if [ -z "$HEALTH_REPO" ] || [ -z "$HEALTH_WORKFLOW" ]; then
+            echo "healthy=true" >> "$GITHUB_OUTPUT"
+            echo "nightly-health-repo/workflow not set - enforcing lint normally"
+            exit 0
+          fi
+          conclusion=$(gh api "repos/${HEALTH_REPO}/actions/workflows/${HEALTH_WORKFLOW}/runs" \
             -f per_page=1 --jq '.workflow_runs[0].conclusion // "unknown"' 2>/dev/null) || conclusion="unknown"
           if [ "$conclusion" = "success" ]; then
             echo "healthy=true" >> "$GITHUB_OUTPUT"
-            echo "nightly-verify's last run: success - enforcing lint normally"
+            echo "${HEALTH_REPO}/${HEALTH_WORKFLOW}'s last run: success - enforcing lint normally"
           elif [ "$conclusion" = "unknown" ]; then
             echo "healthy=true" >> "$GITHUB_OUTPUT"
-            echo "::warning::could not read nightly-verify's status - failing closed (enforcing lint normally)"
+            echo "::warning::could not read ${HEALTH_WORKFLOW}'s status - failing closed (enforcing lint normally)"
           else
             echo "healthy=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::nightly-verify's last run: $conclusion - this PR's lint failures will NOT block merge until nightly is green again"
+            echo "::warning::${HEALTH_REPO}/${HEALTH_WORKFLOW}'s last run: $conclusion - this PR's lint failures will NOT block merge until it is green again"
           fi
       - name: Clippy
         working-directory: ${{ inputs.checkout-path }}
@@ -1115,7 +1138,7 @@ jobs:
           if [ "$NIGHTLY_HEALTHY" = "true" ]; then
             cargo clippy $CRATE_FLAGS -- -W clippy::all
           else
-            cargo clippy $CRATE_FLAGS -- -W clippy::all || echo "::warning::clippy failed, but not enforced while nightly-verify is red"
+            cargo clippy $CRATE_FLAGS -- -W clippy::all || echo "::warning::clippy failed, but not enforced - caller-named nightly health is red"
           fi
       - name: Fmt check
         working-directory: ${{ inputs.checkout-path }}
@@ -1125,7 +1148,7 @@ jobs:
           if [ "$NIGHTLY_HEALTHY" = "true" ]; then
             cargo fmt --all -- --check
           else
-            cargo fmt --all -- --check || echo "::warning::fmt check failed, but not enforced while nightly-verify is red"
+            cargo fmt --all -- --check || echo "::warning::fmt check failed, but not enforced - caller-named nightly health is red"
           fi
 
   # ══════════════════════════════════════════════════════════════════
