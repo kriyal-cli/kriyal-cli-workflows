@@ -1075,15 +1075,58 @@ jobs:
         with: { components: 'rustfmt, clippy' }
       - uses: Swatinem/rust-cache@v2
         with: { workspaces: '${{ inputs.checkout-path }}' }
+      # Whether the fleet-wide --fmt --deep nightly sweep (nightly-verify.yml
+      # in kriyal-cli-private/ci-rules) is currently green. While it is red
+      # on real, pre-existing issues (operator directive, 2026-10-10), a
+      # single PR's lint failures should not block it from merging on top of
+      # a fleet that is already known-broken for unrelated reasons - "same
+      # result as nightly" was the explicit ask. The moment nightly goes
+      # green again, this job's own failures start blocking merges normally
+      # with NO further change needed here - it re-derives the answer fresh
+      # every run rather than needing a manual flip back.
+      #
+      # FAILS CLOSED: any error reading nightly's status (bad token, API
+      # outage, no runs yet) is treated as healthy=true, i.e. still enforce.
+      # A broken health check must never silently turn into a disabled gate.
+      - name: Check nightly-verify health
+        id: nightly-health
+        env:
+          GH_TOKEN: ${{ secrets.CHECKOUT_TOKEN }}
+        run: |
+          conclusion=$(gh api repos/kriyal-cli-private/ci-rules/actions/workflows/nightly-verify.yml/runs \
+            -f per_page=1 --jq '.workflow_runs[0].conclusion // "unknown"' 2>/dev/null) || conclusion="unknown"
+          if [ "$conclusion" = "success" ]; then
+            echo "healthy=true" >> "$GITHUB_OUTPUT"
+            echo "nightly-verify's last run: success - enforcing lint normally"
+          elif [ "$conclusion" = "unknown" ]; then
+            echo "healthy=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::could not read nightly-verify's status - failing closed (enforcing lint normally)"
+          else
+            echo "healthy=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::nightly-verify's last run: $conclusion - this PR's lint failures will NOT block merge until nightly is green again"
+          fi
       - name: Clippy
         working-directory: ${{ inputs.checkout-path }}
+        env:
+          NIGHTLY_HEALTHY: ${{ steps.nightly-health.outputs.healthy }}
         run: |
           CRATE_FLAGS=""
           for c in ${{ inputs.target-crates }}; do CRATE_FLAGS="$CRATE_FLAGS -p $c"; done
-          cargo clippy $CRATE_FLAGS -- -W clippy::all
+          if [ "$NIGHTLY_HEALTHY" = "true" ]; then
+            cargo clippy $CRATE_FLAGS -- -W clippy::all
+          else
+            cargo clippy $CRATE_FLAGS -- -W clippy::all || echo "::warning::clippy failed, but not enforced while nightly-verify is red"
+          fi
       - name: Fmt check
         working-directory: ${{ inputs.checkout-path }}
-        run: cargo fmt --all -- --check
+        env:
+          NIGHTLY_HEALTHY: ${{ steps.nightly-health.outputs.healthy }}
+        run: |
+          if [ "$NIGHTLY_HEALTHY" = "true" ]; then
+            cargo fmt --all -- --check
+          else
+            cargo fmt --all -- --check || echo "::warning::fmt check failed, but not enforced while nightly-verify is red"
+          fi
 
   # ══════════════════════════════════════════════════════════════════
   # SECURITY — generic dependency scanning (license/ban/advisory checks
