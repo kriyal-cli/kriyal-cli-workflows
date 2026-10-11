@@ -32,9 +32,22 @@ on:
         # Contents of workspace-repos.map, passed in rather than fetched.
         # The map is private and the only token in play cannot read the repo
         # holding it, so a caller that already has the file - build-dispatch
-        # lives beside it - hands it over directly. Empty falls back to the
-        # clone below, which is all a caller outside that repo can do.
-        description: 'Contents of workspace-repos.map (directory -> owner/repo). Empty = try to clone it.'
+        # lives beside it - hands it over directly. Empty falls back to
+        # cloning workspace-map-fallback-repo below, which is all a caller
+        # outside that repo can do.
+        description: 'Contents of workspace-repos.map (directory -> owner/repo). Empty = try to clone it from workspace-map-fallback-repo instead.'
+        required: false
+        type: string
+        default: ''
+      workspace-map-fallback-repo:
+        # THIS FILE IS PUBLIC - never hardcode an org/repo name here. Empty
+        # (default) means any caller that also leaves workspace-map empty
+        # simply gets no siblings derived (the same outcome an external
+        # caller already got before this input existed, since it has no
+        # credential to clone a private repo anyway). Only a caller that
+        # names its OWN repo here (safe for it to do, in its own private
+        # file) gets the clone-fallback behavior.
+        description: 'OPTIONAL. owner/repo to clone workspace-repos.map from when workspace-map is empty. Only useful for a caller with SSH/token access to that repo - leave unset otherwise.'
         required: false
         type: string
         default: ''
@@ -187,6 +200,8 @@ jobs:
           CO_PATH: ${{ inputs.checkout-path }}
           CO_CLONES: ${{ inputs.clone-repos }}
           WORKSPACE_MAP: ${{ inputs.workspace-map }}
+          WORKSPACE_MAP_FALLBACK_REPO: ${{ inputs.workspace-map-fallback-repo }}
+          WORKSPACE_MAP_FALLBACK_REPO: ${{ inputs.workspace-map-fallback-repo }}
         run: |
           set -euo pipefail
 
@@ -265,12 +280,12 @@ jobs:
           # ── SIBLING REPOS ────────────────────────────────────────────
           #
           # A Rust workspace here path-depends on crates in OTHER repos, as
-          # relative paths: kriyal-base/common has 12 manifests pointing at
-          # `../../../build`. Cargo resolves those against the filesystem, so
-          # a lone checkout cannot build - it dies with "The system cannot
-          # find the path specified. (os error 3)" AFTER every toolchain step
-          # has passed, which is how it presented on the first real dispatches
-          # to kriyalci1 (runs 33365628968 and 33365891378).
+          # relative paths: a real caller workspace had a dozen-plus manifests
+          # pointing at a sibling repo three directories up. Cargo resolves
+          # those against the filesystem, so a lone checkout cannot build -
+          # it dies with "The system cannot find the path specified. (os
+          # error 3)" AFTER every toolchain step has passed, which is how it
+          # first presented on a real self-hosted dispatch.
           #
           # When the caller did not say which siblings to clone, work it out
           # rather than failing. The list is derived from the checked-out
@@ -295,7 +310,7 @@ jobs:
               printf '%s\n' "$WORKSPACE_MAP" > "$_map"
               echo "using workspace-repos.map supplied by the caller ($(grep -cvE '^[[:space:]]*(#|$)' "$_map") entries)"
               _have_map=1
-            elif git clone --depth 1 "$(url_for kriyal-cli-private/ci-rules)" "$_mapdir/wf" 2>"$_mapdir/err"; then
+            elif [ -n "${WORKSPACE_MAP_FALLBACK_REPO:-}" ] && git clone --depth 1 "$(url_for "$WORKSPACE_MAP_FALLBACK_REPO")" "$_mapdir/wf" 2>"$_mapdir/err"; then
               _map="$_mapdir/wf/workspace-repos.map"
               _have_map=1
             else
@@ -308,12 +323,13 @@ jobs:
               # root - NOT by stripping the `../` and taking the name.
               #
               # The naive form is wrong in a way that would show up on every
-              # build: kriyal-base/common reaches its own crates/base and
-              # crates/spec-generated with `../..`, so it would try to resolve
-              # two repos that do not exist and warn each time. Verified
-              # against the real trees - common derives exactly {build,
-              # common-device} and artifacts {build, common, common-device,
-              # vendor}, which matches their actual failures.
+              # build: a repo can reach its OWN crates with `../..` (same
+              # depth as a true sibling escape), so stripping `../` and
+              # taking the name would try to resolve a repo that does not
+              # exist and warn every time. Verified against real caller
+              # workspaces - the depth-comparison form derives exactly the
+              # siblings each one actually needs, matching their real
+              # failures when it was missing.
               _names=$(
                 while IFS= read -r _m; do
                   _dir=$(dirname "$_m")
@@ -339,10 +355,10 @@ jobs:
                 # Skipping them meant the first build on a box cloned the
                 # siblings and every build after it compiled against whatever
                 # version happened to be on disk - green while testing stale
-                # code, which is worse than failing. Seen on kriyalci1: the
-                # windows job derived <none> while lint, in a different
-                # workdir, derived build and common-device from the same
-                # commit (run 33547873715).
+                # code, which is worse than failing. Seen on a real
+                # self-hosted runner: one job derived no siblings at all
+                # while another, in a different workdir, derived two for the
+                # same commit.
                 #
                 # Whether a path-dep is EXTERNAL is already decided by the
                 # depth comparison above; the filesystem has no say in it.
@@ -431,6 +447,8 @@ jobs:
           CO_PATH: ${{ inputs.checkout-path }}
           CO_CLONES: ${{ inputs.clone-repos }}
           WORKSPACE_MAP: ${{ inputs.workspace-map }}
+          WORKSPACE_MAP_FALLBACK_REPO: ${{ inputs.workspace-map-fallback-repo }}
+          WORKSPACE_MAP_FALLBACK_REPO: ${{ inputs.workspace-map-fallback-repo }}
         run: |
           set -euo pipefail
 
@@ -509,12 +527,12 @@ jobs:
           # ── SIBLING REPOS ────────────────────────────────────────────
           #
           # A Rust workspace here path-depends on crates in OTHER repos, as
-          # relative paths: kriyal-base/common has 12 manifests pointing at
-          # `../../../build`. Cargo resolves those against the filesystem, so
-          # a lone checkout cannot build - it dies with "The system cannot
-          # find the path specified. (os error 3)" AFTER every toolchain step
-          # has passed, which is how it presented on the first real dispatches
-          # to kriyalci1 (runs 33365628968 and 33365891378).
+          # relative paths: a real caller workspace had a dozen-plus manifests
+          # pointing at a sibling repo three directories up. Cargo resolves
+          # those against the filesystem, so a lone checkout cannot build -
+          # it dies with "The system cannot find the path specified. (os
+          # error 3)" AFTER every toolchain step has passed, which is how it
+          # first presented on a real self-hosted dispatch.
           #
           # When the caller did not say which siblings to clone, work it out
           # rather than failing. The list is derived from the checked-out
@@ -539,7 +557,7 @@ jobs:
               printf '%s\n' "$WORKSPACE_MAP" > "$_map"
               echo "using workspace-repos.map supplied by the caller ($(grep -cvE '^[[:space:]]*(#|$)' "$_map") entries)"
               _have_map=1
-            elif git clone --depth 1 "$(url_for kriyal-cli-private/ci-rules)" "$_mapdir/wf" 2>"$_mapdir/err"; then
+            elif [ -n "${WORKSPACE_MAP_FALLBACK_REPO:-}" ] && git clone --depth 1 "$(url_for "$WORKSPACE_MAP_FALLBACK_REPO")" "$_mapdir/wf" 2>"$_mapdir/err"; then
               _map="$_mapdir/wf/workspace-repos.map"
               _have_map=1
             else
@@ -552,12 +570,13 @@ jobs:
               # root - NOT by stripping the `../` and taking the name.
               #
               # The naive form is wrong in a way that would show up on every
-              # build: kriyal-base/common reaches its own crates/base and
-              # crates/spec-generated with `../..`, so it would try to resolve
-              # two repos that do not exist and warn each time. Verified
-              # against the real trees - common derives exactly {build,
-              # common-device} and artifacts {build, common, common-device,
-              # vendor}, which matches their actual failures.
+              # build: a repo can reach its OWN crates with `../..` (same
+              # depth as a true sibling escape), so stripping `../` and
+              # taking the name would try to resolve a repo that does not
+              # exist and warn every time. Verified against real caller
+              # workspaces - the depth-comparison form derives exactly the
+              # siblings each one actually needs, matching their real
+              # failures when it was missing.
               _names=$(
                 while IFS= read -r _m; do
                   _dir=$(dirname "$_m")
@@ -583,10 +602,10 @@ jobs:
                 # Skipping them meant the first build on a box cloned the
                 # siblings and every build after it compiled against whatever
                 # version happened to be on disk - green while testing stale
-                # code, which is worse than failing. Seen on kriyalci1: the
-                # windows job derived <none> while lint, in a different
-                # workdir, derived build and common-device from the same
-                # commit (run 33547873715).
+                # code, which is worse than failing. Seen on a real
+                # self-hosted runner: one job derived no siblings at all
+                # while another, in a different workdir, derived two for the
+                # same commit.
                 #
                 # Whether a path-dep is EXTERNAL is already decided by the
                 # depth comparison above; the filesystem has no say in it.
@@ -666,6 +685,8 @@ jobs:
           CO_PATH: ${{ inputs.checkout-path }}
           CO_CLONES: ${{ inputs.clone-repos }}
           WORKSPACE_MAP: ${{ inputs.workspace-map }}
+          WORKSPACE_MAP_FALLBACK_REPO: ${{ inputs.workspace-map-fallback-repo }}
+          WORKSPACE_MAP_FALLBACK_REPO: ${{ inputs.workspace-map-fallback-repo }}
         run: |
           set -euo pipefail
 
@@ -744,12 +765,12 @@ jobs:
           # ── SIBLING REPOS ────────────────────────────────────────────
           #
           # A Rust workspace here path-depends on crates in OTHER repos, as
-          # relative paths: kriyal-base/common has 12 manifests pointing at
-          # `../../../build`. Cargo resolves those against the filesystem, so
-          # a lone checkout cannot build - it dies with "The system cannot
-          # find the path specified. (os error 3)" AFTER every toolchain step
-          # has passed, which is how it presented on the first real dispatches
-          # to kriyalci1 (runs 33365628968 and 33365891378).
+          # relative paths: a real caller workspace had a dozen-plus manifests
+          # pointing at a sibling repo three directories up. Cargo resolves
+          # those against the filesystem, so a lone checkout cannot build -
+          # it dies with "The system cannot find the path specified. (os
+          # error 3)" AFTER every toolchain step has passed, which is how it
+          # first presented on a real self-hosted dispatch.
           #
           # When the caller did not say which siblings to clone, work it out
           # rather than failing. The list is derived from the checked-out
@@ -774,7 +795,7 @@ jobs:
               printf '%s\n' "$WORKSPACE_MAP" > "$_map"
               echo "using workspace-repos.map supplied by the caller ($(grep -cvE '^[[:space:]]*(#|$)' "$_map") entries)"
               _have_map=1
-            elif git clone --depth 1 "$(url_for kriyal-cli-private/ci-rules)" "$_mapdir/wf" 2>"$_mapdir/err"; then
+            elif [ -n "${WORKSPACE_MAP_FALLBACK_REPO:-}" ] && git clone --depth 1 "$(url_for "$WORKSPACE_MAP_FALLBACK_REPO")" "$_mapdir/wf" 2>"$_mapdir/err"; then
               _map="$_mapdir/wf/workspace-repos.map"
               _have_map=1
             else
@@ -787,12 +808,13 @@ jobs:
               # root - NOT by stripping the `../` and taking the name.
               #
               # The naive form is wrong in a way that would show up on every
-              # build: kriyal-base/common reaches its own crates/base and
-              # crates/spec-generated with `../..`, so it would try to resolve
-              # two repos that do not exist and warn each time. Verified
-              # against the real trees - common derives exactly {build,
-              # common-device} and artifacts {build, common, common-device,
-              # vendor}, which matches their actual failures.
+              # build: a repo can reach its OWN crates with `../..` (same
+              # depth as a true sibling escape), so stripping `../` and
+              # taking the name would try to resolve a repo that does not
+              # exist and warn every time. Verified against real caller
+              # workspaces - the depth-comparison form derives exactly the
+              # siblings each one actually needs, matching their real
+              # failures when it was missing.
               _names=$(
                 while IFS= read -r _m; do
                   _dir=$(dirname "$_m")
@@ -818,10 +840,10 @@ jobs:
                 # Skipping them meant the first build on a box cloned the
                 # siblings and every build after it compiled against whatever
                 # version happened to be on disk - green while testing stale
-                # code, which is worse than failing. Seen on kriyalci1: the
-                # windows job derived <none> while lint, in a different
-                # workdir, derived build and common-device from the same
-                # commit (run 33547873715).
+                # code, which is worse than failing. Seen on a real
+                # self-hosted runner: one job derived no siblings at all
+                # while another, in a different workdir, derived two for the
+                # same commit.
                 #
                 # Whether a path-dep is EXTERNAL is already decided by the
                 # depth comparison above; the filesystem has no say in it.
@@ -894,6 +916,8 @@ jobs:
           CO_PATH: ${{ inputs.checkout-path }}
           CO_CLONES: ${{ inputs.clone-repos }}
           WORKSPACE_MAP: ${{ inputs.workspace-map }}
+          WORKSPACE_MAP_FALLBACK_REPO: ${{ inputs.workspace-map-fallback-repo }}
+          WORKSPACE_MAP_FALLBACK_REPO: ${{ inputs.workspace-map-fallback-repo }}
         run: |
           set -euo pipefail
 
@@ -972,12 +996,12 @@ jobs:
           # ── SIBLING REPOS ────────────────────────────────────────────
           #
           # A Rust workspace here path-depends on crates in OTHER repos, as
-          # relative paths: kriyal-base/common has 12 manifests pointing at
-          # `../../../build`. Cargo resolves those against the filesystem, so
-          # a lone checkout cannot build - it dies with "The system cannot
-          # find the path specified. (os error 3)" AFTER every toolchain step
-          # has passed, which is how it presented on the first real dispatches
-          # to kriyalci1 (runs 33365628968 and 33365891378).
+          # relative paths: a real caller workspace had a dozen-plus manifests
+          # pointing at a sibling repo three directories up. Cargo resolves
+          # those against the filesystem, so a lone checkout cannot build -
+          # it dies with "The system cannot find the path specified. (os
+          # error 3)" AFTER every toolchain step has passed, which is how it
+          # first presented on a real self-hosted dispatch.
           #
           # When the caller did not say which siblings to clone, work it out
           # rather than failing. The list is derived from the checked-out
@@ -1002,7 +1026,7 @@ jobs:
               printf '%s\n' "$WORKSPACE_MAP" > "$_map"
               echo "using workspace-repos.map supplied by the caller ($(grep -cvE '^[[:space:]]*(#|$)' "$_map") entries)"
               _have_map=1
-            elif git clone --depth 1 "$(url_for kriyal-cli-private/ci-rules)" "$_mapdir/wf" 2>"$_mapdir/err"; then
+            elif [ -n "${WORKSPACE_MAP_FALLBACK_REPO:-}" ] && git clone --depth 1 "$(url_for "$WORKSPACE_MAP_FALLBACK_REPO")" "$_mapdir/wf" 2>"$_mapdir/err"; then
               _map="$_mapdir/wf/workspace-repos.map"
               _have_map=1
             else
@@ -1015,12 +1039,13 @@ jobs:
               # root - NOT by stripping the `../` and taking the name.
               #
               # The naive form is wrong in a way that would show up on every
-              # build: kriyal-base/common reaches its own crates/base and
-              # crates/spec-generated with `../..`, so it would try to resolve
-              # two repos that do not exist and warn each time. Verified
-              # against the real trees - common derives exactly {build,
-              # common-device} and artifacts {build, common, common-device,
-              # vendor}, which matches their actual failures.
+              # build: a repo can reach its OWN crates with `../..` (same
+              # depth as a true sibling escape), so stripping `../` and
+              # taking the name would try to resolve a repo that does not
+              # exist and warn every time. Verified against real caller
+              # workspaces - the depth-comparison form derives exactly the
+              # siblings each one actually needs, matching their real
+              # failures when it was missing.
               _names=$(
                 while IFS= read -r _m; do
                   _dir=$(dirname "$_m")
@@ -1046,10 +1071,10 @@ jobs:
                 # Skipping them meant the first build on a box cloned the
                 # siblings and every build after it compiled against whatever
                 # version happened to be on disk - green while testing stale
-                # code, which is worse than failing. Seen on kriyalci1: the
-                # windows job derived <none> while lint, in a different
-                # workdir, derived build and common-device from the same
-                # commit (run 33547873715).
+                # code, which is worse than failing. Seen on a real
+                # self-hosted runner: one job derived no siblings at all
+                # while another, in a different workdir, derived two for the
+                # same commit.
                 #
                 # Whether a path-dep is EXTERNAL is already decided by the
                 # depth comparison above; the filesystem has no say in it.
@@ -1184,6 +1209,8 @@ jobs:
           CO_PATH: ${{ inputs.checkout-path }}
           CO_CLONES: ${{ inputs.clone-repos }}
           WORKSPACE_MAP: ${{ inputs.workspace-map }}
+          WORKSPACE_MAP_FALLBACK_REPO: ${{ inputs.workspace-map-fallback-repo }}
+          WORKSPACE_MAP_FALLBACK_REPO: ${{ inputs.workspace-map-fallback-repo }}
         run: |
           set -euo pipefail
 
@@ -1262,12 +1289,12 @@ jobs:
           # ── SIBLING REPOS ────────────────────────────────────────────
           #
           # A Rust workspace here path-depends on crates in OTHER repos, as
-          # relative paths: kriyal-base/common has 12 manifests pointing at
-          # `../../../build`. Cargo resolves those against the filesystem, so
-          # a lone checkout cannot build - it dies with "The system cannot
-          # find the path specified. (os error 3)" AFTER every toolchain step
-          # has passed, which is how it presented on the first real dispatches
-          # to kriyalci1 (runs 33365628968 and 33365891378).
+          # relative paths: a real caller workspace had a dozen-plus manifests
+          # pointing at a sibling repo three directories up. Cargo resolves
+          # those against the filesystem, so a lone checkout cannot build -
+          # it dies with "The system cannot find the path specified. (os
+          # error 3)" AFTER every toolchain step has passed, which is how it
+          # first presented on a real self-hosted dispatch.
           #
           # When the caller did not say which siblings to clone, work it out
           # rather than failing. The list is derived from the checked-out
@@ -1292,7 +1319,7 @@ jobs:
               printf '%s\n' "$WORKSPACE_MAP" > "$_map"
               echo "using workspace-repos.map supplied by the caller ($(grep -cvE '^[[:space:]]*(#|$)' "$_map") entries)"
               _have_map=1
-            elif git clone --depth 1 "$(url_for kriyal-cli-private/ci-rules)" "$_mapdir/wf" 2>"$_mapdir/err"; then
+            elif [ -n "${WORKSPACE_MAP_FALLBACK_REPO:-}" ] && git clone --depth 1 "$(url_for "$WORKSPACE_MAP_FALLBACK_REPO")" "$_mapdir/wf" 2>"$_mapdir/err"; then
               _map="$_mapdir/wf/workspace-repos.map"
               _have_map=1
             else
@@ -1305,12 +1332,13 @@ jobs:
               # root - NOT by stripping the `../` and taking the name.
               #
               # The naive form is wrong in a way that would show up on every
-              # build: kriyal-base/common reaches its own crates/base and
-              # crates/spec-generated with `../..`, so it would try to resolve
-              # two repos that do not exist and warn each time. Verified
-              # against the real trees - common derives exactly {build,
-              # common-device} and artifacts {build, common, common-device,
-              # vendor}, which matches their actual failures.
+              # build: a repo can reach its OWN crates with `../..` (same
+              # depth as a true sibling escape), so stripping `../` and
+              # taking the name would try to resolve a repo that does not
+              # exist and warn every time. Verified against real caller
+              # workspaces - the depth-comparison form derives exactly the
+              # siblings each one actually needs, matching their real
+              # failures when it was missing.
               _names=$(
                 while IFS= read -r _m; do
                   _dir=$(dirname "$_m")
@@ -1336,10 +1364,10 @@ jobs:
                 # Skipping them meant the first build on a box cloned the
                 # siblings and every build after it compiled against whatever
                 # version happened to be on disk - green while testing stale
-                # code, which is worse than failing. Seen on kriyalci1: the
-                # windows job derived <none> while lint, in a different
-                # workdir, derived build and common-device from the same
-                # commit (run 33547873715).
+                # code, which is worse than failing. Seen on a real
+                # self-hosted runner: one job derived no siblings at all
+                # while another, in a different workdir, derived two for the
+                # same commit.
                 #
                 # Whether a path-dep is EXTERNAL is already decided by the
                 # depth comparison above; the filesystem has no say in it.
@@ -1419,6 +1447,8 @@ jobs:
           CO_PATH: ${{ inputs.checkout-path }}
           CO_CLONES: ${{ inputs.clone-repos }}
           WORKSPACE_MAP: ${{ inputs.workspace-map }}
+          WORKSPACE_MAP_FALLBACK_REPO: ${{ inputs.workspace-map-fallback-repo }}
+          WORKSPACE_MAP_FALLBACK_REPO: ${{ inputs.workspace-map-fallback-repo }}
         run: |
           set -euo pipefail
 
@@ -1497,12 +1527,12 @@ jobs:
           # ── SIBLING REPOS ────────────────────────────────────────────
           #
           # A Rust workspace here path-depends on crates in OTHER repos, as
-          # relative paths: kriyal-base/common has 12 manifests pointing at
-          # `../../../build`. Cargo resolves those against the filesystem, so
-          # a lone checkout cannot build - it dies with "The system cannot
-          # find the path specified. (os error 3)" AFTER every toolchain step
-          # has passed, which is how it presented on the first real dispatches
-          # to kriyalci1 (runs 33365628968 and 33365891378).
+          # relative paths: a real caller workspace had a dozen-plus manifests
+          # pointing at a sibling repo three directories up. Cargo resolves
+          # those against the filesystem, so a lone checkout cannot build -
+          # it dies with "The system cannot find the path specified. (os
+          # error 3)" AFTER every toolchain step has passed, which is how it
+          # first presented on a real self-hosted dispatch.
           #
           # When the caller did not say which siblings to clone, work it out
           # rather than failing. The list is derived from the checked-out
@@ -1527,7 +1557,7 @@ jobs:
               printf '%s\n' "$WORKSPACE_MAP" > "$_map"
               echo "using workspace-repos.map supplied by the caller ($(grep -cvE '^[[:space:]]*(#|$)' "$_map") entries)"
               _have_map=1
-            elif git clone --depth 1 "$(url_for kriyal-cli-private/ci-rules)" "$_mapdir/wf" 2>"$_mapdir/err"; then
+            elif [ -n "${WORKSPACE_MAP_FALLBACK_REPO:-}" ] && git clone --depth 1 "$(url_for "$WORKSPACE_MAP_FALLBACK_REPO")" "$_mapdir/wf" 2>"$_mapdir/err"; then
               _map="$_mapdir/wf/workspace-repos.map"
               _have_map=1
             else
@@ -1540,12 +1570,13 @@ jobs:
               # root - NOT by stripping the `../` and taking the name.
               #
               # The naive form is wrong in a way that would show up on every
-              # build: kriyal-base/common reaches its own crates/base and
-              # crates/spec-generated with `../..`, so it would try to resolve
-              # two repos that do not exist and warn each time. Verified
-              # against the real trees - common derives exactly {build,
-              # common-device} and artifacts {build, common, common-device,
-              # vendor}, which matches their actual failures.
+              # build: a repo can reach its OWN crates with `../..` (same
+              # depth as a true sibling escape), so stripping `../` and
+              # taking the name would try to resolve a repo that does not
+              # exist and warn every time. Verified against real caller
+              # workspaces - the depth-comparison form derives exactly the
+              # siblings each one actually needs, matching their real
+              # failures when it was missing.
               _names=$(
                 while IFS= read -r _m; do
                   _dir=$(dirname "$_m")
@@ -1571,10 +1602,10 @@ jobs:
                 # Skipping them meant the first build on a box cloned the
                 # siblings and every build after it compiled against whatever
                 # version happened to be on disk - green while testing stale
-                # code, which is worse than failing. Seen on kriyalci1: the
-                # windows job derived <none> while lint, in a different
-                # workdir, derived build and common-device from the same
-                # commit (run 33547873715).
+                # code, which is worse than failing. Seen on a real
+                # self-hosted runner: one job derived no siblings at all
+                # while another, in a different workdir, derived two for the
+                # same commit.
                 #
                 # Whether a path-dep is EXTERNAL is already decided by the
                 # depth comparison above; the filesystem has no say in it.
@@ -1644,6 +1675,8 @@ jobs:
           CO_PATH: ${{ inputs.checkout-path }}
           CO_CLONES: ${{ inputs.clone-repos }}
           WORKSPACE_MAP: ${{ inputs.workspace-map }}
+          WORKSPACE_MAP_FALLBACK_REPO: ${{ inputs.workspace-map-fallback-repo }}
+          WORKSPACE_MAP_FALLBACK_REPO: ${{ inputs.workspace-map-fallback-repo }}
         run: |
           set -euo pipefail
 
@@ -1722,12 +1755,12 @@ jobs:
           # ── SIBLING REPOS ────────────────────────────────────────────
           #
           # A Rust workspace here path-depends on crates in OTHER repos, as
-          # relative paths: kriyal-base/common has 12 manifests pointing at
-          # `../../../build`. Cargo resolves those against the filesystem, so
-          # a lone checkout cannot build - it dies with "The system cannot
-          # find the path specified. (os error 3)" AFTER every toolchain step
-          # has passed, which is how it presented on the first real dispatches
-          # to kriyalci1 (runs 33365628968 and 33365891378).
+          # relative paths: a real caller workspace had a dozen-plus manifests
+          # pointing at a sibling repo three directories up. Cargo resolves
+          # those against the filesystem, so a lone checkout cannot build -
+          # it dies with "The system cannot find the path specified. (os
+          # error 3)" AFTER every toolchain step has passed, which is how it
+          # first presented on a real self-hosted dispatch.
           #
           # When the caller did not say which siblings to clone, work it out
           # rather than failing. The list is derived from the checked-out
@@ -1752,7 +1785,7 @@ jobs:
               printf '%s\n' "$WORKSPACE_MAP" > "$_map"
               echo "using workspace-repos.map supplied by the caller ($(grep -cvE '^[[:space:]]*(#|$)' "$_map") entries)"
               _have_map=1
-            elif git clone --depth 1 "$(url_for kriyal-cli-private/ci-rules)" "$_mapdir/wf" 2>"$_mapdir/err"; then
+            elif [ -n "${WORKSPACE_MAP_FALLBACK_REPO:-}" ] && git clone --depth 1 "$(url_for "$WORKSPACE_MAP_FALLBACK_REPO")" "$_mapdir/wf" 2>"$_mapdir/err"; then
               _map="$_mapdir/wf/workspace-repos.map"
               _have_map=1
             else
@@ -1765,12 +1798,13 @@ jobs:
               # root - NOT by stripping the `../` and taking the name.
               #
               # The naive form is wrong in a way that would show up on every
-              # build: kriyal-base/common reaches its own crates/base and
-              # crates/spec-generated with `../..`, so it would try to resolve
-              # two repos that do not exist and warn each time. Verified
-              # against the real trees - common derives exactly {build,
-              # common-device} and artifacts {build, common, common-device,
-              # vendor}, which matches their actual failures.
+              # build: a repo can reach its OWN crates with `../..` (same
+              # depth as a true sibling escape), so stripping `../` and
+              # taking the name would try to resolve a repo that does not
+              # exist and warn every time. Verified against real caller
+              # workspaces - the depth-comparison form derives exactly the
+              # siblings each one actually needs, matching their real
+              # failures when it was missing.
               _names=$(
                 while IFS= read -r _m; do
                   _dir=$(dirname "$_m")
@@ -1796,10 +1830,10 @@ jobs:
                 # Skipping them meant the first build on a box cloned the
                 # siblings and every build after it compiled against whatever
                 # version happened to be on disk - green while testing stale
-                # code, which is worse than failing. Seen on kriyalci1: the
-                # windows job derived <none> while lint, in a different
-                # workdir, derived build and common-device from the same
-                # commit (run 33547873715).
+                # code, which is worse than failing. Seen on a real
+                # self-hosted runner: one job derived no siblings at all
+                # while another, in a different workdir, derived two for the
+                # same commit.
                 #
                 # Whether a path-dep is EXTERNAL is already decided by the
                 # depth comparison above; the filesystem has no say in it.
@@ -1869,6 +1903,8 @@ jobs:
           CO_PATH: ${{ inputs.checkout-path }}
           CO_CLONES: ${{ inputs.clone-repos }}
           WORKSPACE_MAP: ${{ inputs.workspace-map }}
+          WORKSPACE_MAP_FALLBACK_REPO: ${{ inputs.workspace-map-fallback-repo }}
+          WORKSPACE_MAP_FALLBACK_REPO: ${{ inputs.workspace-map-fallback-repo }}
         run: |
           set -euo pipefail
 
@@ -1947,12 +1983,12 @@ jobs:
           # ── SIBLING REPOS ────────────────────────────────────────────
           #
           # A Rust workspace here path-depends on crates in OTHER repos, as
-          # relative paths: kriyal-base/common has 12 manifests pointing at
-          # `../../../build`. Cargo resolves those against the filesystem, so
-          # a lone checkout cannot build - it dies with "The system cannot
-          # find the path specified. (os error 3)" AFTER every toolchain step
-          # has passed, which is how it presented on the first real dispatches
-          # to kriyalci1 (runs 33365628968 and 33365891378).
+          # relative paths: a real caller workspace had a dozen-plus manifests
+          # pointing at a sibling repo three directories up. Cargo resolves
+          # those against the filesystem, so a lone checkout cannot build -
+          # it dies with "The system cannot find the path specified. (os
+          # error 3)" AFTER every toolchain step has passed, which is how it
+          # first presented on a real self-hosted dispatch.
           #
           # When the caller did not say which siblings to clone, work it out
           # rather than failing. The list is derived from the checked-out
@@ -1977,7 +2013,7 @@ jobs:
               printf '%s\n' "$WORKSPACE_MAP" > "$_map"
               echo "using workspace-repos.map supplied by the caller ($(grep -cvE '^[[:space:]]*(#|$)' "$_map") entries)"
               _have_map=1
-            elif git clone --depth 1 "$(url_for kriyal-cli-private/ci-rules)" "$_mapdir/wf" 2>"$_mapdir/err"; then
+            elif [ -n "${WORKSPACE_MAP_FALLBACK_REPO:-}" ] && git clone --depth 1 "$(url_for "$WORKSPACE_MAP_FALLBACK_REPO")" "$_mapdir/wf" 2>"$_mapdir/err"; then
               _map="$_mapdir/wf/workspace-repos.map"
               _have_map=1
             else
@@ -1990,12 +2026,13 @@ jobs:
               # root - NOT by stripping the `../` and taking the name.
               #
               # The naive form is wrong in a way that would show up on every
-              # build: kriyal-base/common reaches its own crates/base and
-              # crates/spec-generated with `../..`, so it would try to resolve
-              # two repos that do not exist and warn each time. Verified
-              # against the real trees - common derives exactly {build,
-              # common-device} and artifacts {build, common, common-device,
-              # vendor}, which matches their actual failures.
+              # build: a repo can reach its OWN crates with `../..` (same
+              # depth as a true sibling escape), so stripping `../` and
+              # taking the name would try to resolve a repo that does not
+              # exist and warn every time. Verified against real caller
+              # workspaces - the depth-comparison form derives exactly the
+              # siblings each one actually needs, matching their real
+              # failures when it was missing.
               _names=$(
                 while IFS= read -r _m; do
                   _dir=$(dirname "$_m")
@@ -2021,10 +2058,10 @@ jobs:
                 # Skipping them meant the first build on a box cloned the
                 # siblings and every build after it compiled against whatever
                 # version happened to be on disk - green while testing stale
-                # code, which is worse than failing. Seen on kriyalci1: the
-                # windows job derived <none> while lint, in a different
-                # workdir, derived build and common-device from the same
-                # commit (run 33547873715).
+                # code, which is worse than failing. Seen on a real
+                # self-hosted runner: one job derived no siblings at all
+                # while another, in a different workdir, derived two for the
+                # same commit.
                 #
                 # Whether a path-dep is EXTERNAL is already decided by the
                 # depth comparison above; the filesystem has no say in it.
