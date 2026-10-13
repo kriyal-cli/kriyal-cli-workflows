@@ -1,0 +1,32 @@
+name: Loom model discovery
+description: >-
+  Emit the Cargo packages in a checkout that carry loom interleaving models
+  (`*_loom_tests.rs`), as a JSON array of `{package, dir, filters}` usable as a
+  job matrix. `filters` are the libtest path fragments of each model
+  (`<host module>::<module>::`), because a model is normally declared as
+  `#[path = "x_loom_tests.rs"] mod loom_tests;` and is not named after its file.
+  Discovery by scanning, so a model added anywhere is picked up without anyone
+  updating a list.
+inputs:
+  working-directory:
+    description: Directory to scan (a cargo workspace root).
+    required: false
+    default: "."
+outputs:
+  packages:
+    description: JSON array of `{package, dir, filters}` objects (may be `[]`).
+    value: ${{ steps.scan.outputs.packages }}
+  count:
+    description: Number of packages found.
+    value: ${{ steps.scan.outputs.count }}
+runs:
+  using: composite
+  steps:
+    - id: scan
+      shell: bash
+      run: |
+        set -euo pipefail
+        json="$(python3 "${{ github.action_path }}/loom_lanes.py" "${{ inputs.working-directory }}")"
+        echo "packages=$json" >> "$GITHUB_OUTPUT"
+        echo "count=$(echo "$json" | jq 'length')" >> "$GITHUB_OUTPUT"
+        echo "Loom model packages: $json"

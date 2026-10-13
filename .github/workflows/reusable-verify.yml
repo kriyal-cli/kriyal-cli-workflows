@@ -8,7 +8,7 @@
 #   fast    fmt + clippy + artifact audit + dependency hygiene (tree -d, deny
 #           bans advisory; machete + udeps HARD by default) + cargo audit
 #           (RUSTSEC/CVE scan, HARD by default)                (every push)
-#   deep    + Kani proofs (one job per discovered crate) + geiger + miri
+#   deep    + Kani proofs and loom models (one job per discovered crate) + geiger + miri
 #           (report-only by default — see miri-enforce) + semver-checks
 #           (advisory), cache-gated
 #   nightly  deep with the cache disabled — a cache is an assumption, and the
@@ -146,6 +146,16 @@ on:
         default: ""
       semver-checks:
         description: "Run cargo-semver-checks against semver-baseline-rev (advisory: never fails the run — a missing/unreachable baseline is common and is not itself a semver violation)."
+        type: boolean
+        required: false
+        default: true
+      loom-max-preemptions:
+        description: "LOOM_MAX_PREEMPTIONS bound on each model's exploration."
+        type: string
+        required: false
+        default: "3"
+      loom-enforce:
+        description: "In deep/nightly, fail the run when a discovered crate's loom models fail or do not run."
         type: boolean
         required: false
         default: true
@@ -595,6 +605,167 @@ jobs:
       - name: "cached verdict"
         if: ${{ steps.verdict.outputs.cache-hit == 'true' }}
         run: echo "proofs unchanged since the last verified run — replaying cached verdict"
+
+  loom-discover:
+    name: "discover loom models"
+    if: ${{ inputs.tier != 'fast' }}
+    runs-on: ${{ inputs.runner != '' && fromJSON(inputs.runner) || inputs.runs-on }}
+    outputs:
+      packages: ${{ steps.d.outputs.packages }}
+      count: ${{ steps.d.outputs.count }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ inputs.checkout-repo }}
+          ref: ${{ inputs.checkout-ref }}
+          path: ${{ inputs.checkout-path }}
+          token: ${{ secrets.CHECKOUT_TOKEN || github.token }}
+      - name: Clone sibling repos (multi-repo workspaces)
+        shell: bash
+        env:
+          CHECKOUT_TOKEN: ${{ secrets.CHECKOUT_TOKEN }}
+          CO_PATH: ${{ inputs.checkout-path }}
+          WORKSPACE_MAP: ${{ inputs.workspace-map }}
+        run: |
+          set -uo pipefail
+          # A path-dep lives in ANOTHER repo only if it ESCAPES the checkout
+          # root (../ count > how deep the manifest sits). The map turns the
+          # escaping directory name into owner/repo. Same logic as
+          # reusable-build; keeps deep/clippy resolvable on multi-repo trees.
+          [ -n "${WORKSPACE_MAP:-}" ] || { echo "no workspace-map - single-repo verify"; exit 0; }
+          _map="$(mktemp)"; printf '%s\n' "$WORKSPACE_MAP" > "$_map"
+          url_for() {
+            if [ -n "${CHECKOUT_TOKEN:-}" ]; then printf 'https://x-access-token:%s@github.com/%s.git' "$CHECKOUT_TOKEN" "$1"
+            else printf 'git@github.com:%s.git' "$1"; fi
+          }
+          _names=$(
+            while IFS= read -r _m; do
+              _dir=$(dirname "$_m"); _rel="${_dir#"$CO_PATH"}"; _rel="${_rel#/}"
+              if [ -z "$_rel" ]; then _depth=0; else _depth=$(awk -F/ '{print NF}' <<<"$_rel"); fi
+              while IFS= read -r _p; do
+                case "$_p" in ../*) ;; *) continue ;; esac
+                _ups=$(grep -o '\.\./' <<<"$_p" | wc -l | tr -d ' ')
+                [ "$_ups" -le "$_depth" ] && continue
+                sed -E 's#^(\.\./)+##' <<<"$_p" | cut -d/ -f1
+              done < <(grep -oE 'path[[:space:]]*=[[:space:]]*"[^"]+"' "$_m" 2>/dev/null | sed -E 's/.*"([^"]+)"/\1/')
+            done < <(find "$CO_PATH" -name Cargo.toml -not -path '*/target/*') | sort -u
+          )
+          for _n in $_names; do
+            [ -n "$_n" ] || continue
+            [ "$_n" = "$CO_PATH" ] && continue
+            [ -d "$_n" ] && continue
+            _repo=$(awk -v n="$_n" '$1 == n { print $2; exit }' "$_map")
+            if [ -z "$_repo" ]; then echo "::warning::path-dep '$_n' not in workspace-repos.map - not cloned"; continue; fi
+            git clone --depth 1 "$(url_for "$_repo")" "$_n" && echo "cloned sibling $_repo -> $_n"
+          done
+      - id: d
+        uses: kriyal-cli/kriyal-cli-workflows/.github/actions/loom-discover@main
+        with:
+          working-directory: ${{ inputs.working-directory }}
+
+  # Loom models are `#[cfg(all(loom, test))]` modules: under a plain `cargo test` they are
+  # COMPILED OUT, so the ordinary test job passes without ever running one. This job is the only
+  # thing that executes them. Each model runs BY NAME (`--lib <host>::<module>::`) so one model's
+  # exhaustive exploration never rides along with another's, and a lane that matches no test is
+  # a FAILURE: libtest reports an unmatched filter as a green run, which would let a model be
+  # silently skipped.
+  loom:
+    name: "loom: ${{ matrix.pkg.package }}"
+    needs: loom-discover
+    if: ${{ inputs.tier != 'fast' && needs.loom-discover.outputs.count != '0' }}
+    runs-on: ${{ inputs.runner != '' && fromJSON(inputs.runner) || inputs.runs-on }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        pkg: ${{ fromJSON(needs.loom-discover.outputs.packages) }}
+    env:
+      # `RUSTFLAGS` from the environment REPLACES any config-file rustflags, so the
+      # warnings-as-errors policy is restated here.
+      RUSTFLAGS: "--cfg loom -D warnings"
+      CARGO_TARGET_DIR: target-loom
+      LOOM_MAX_PREEMPTIONS: ${{ inputs.loom-max-preemptions }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ inputs.checkout-repo }}
+          ref: ${{ inputs.checkout-ref }}
+          path: ${{ inputs.checkout-path }}
+          token: ${{ secrets.CHECKOUT_TOKEN || github.token }}
+      - name: Clone sibling repos (multi-repo workspaces)
+        shell: bash
+        env:
+          CHECKOUT_TOKEN: ${{ secrets.CHECKOUT_TOKEN }}
+          CO_PATH: ${{ inputs.checkout-path }}
+          WORKSPACE_MAP: ${{ inputs.workspace-map }}
+        run: |
+          set -uo pipefail
+          # A path-dep lives in ANOTHER repo only if it ESCAPES the checkout
+          # root (../ count > how deep the manifest sits). The map turns the
+          # escaping directory name into owner/repo. Same logic as
+          # reusable-build; keeps deep/clippy resolvable on multi-repo trees.
+          [ -n "${WORKSPACE_MAP:-}" ] || { echo "no workspace-map - single-repo verify"; exit 0; }
+          _map="$(mktemp)"; printf '%s\n' "$WORKSPACE_MAP" > "$_map"
+          url_for() {
+            if [ -n "${CHECKOUT_TOKEN:-}" ]; then printf 'https://x-access-token:%s@github.com/%s.git' "$CHECKOUT_TOKEN" "$1"
+            else printf 'git@github.com:%s.git' "$1"; fi
+          }
+          _names=$(
+            while IFS= read -r _m; do
+              _dir=$(dirname "$_m"); _rel="${_dir#"$CO_PATH"}"; _rel="${_rel#/}"
+              if [ -z "$_rel" ]; then _depth=0; else _depth=$(awk -F/ '{print NF}' <<<"$_rel"); fi
+              while IFS= read -r _p; do
+                case "$_p" in ../*) ;; *) continue ;; esac
+                _ups=$(grep -o '\.\./' <<<"$_p" | wc -l | tr -d ' ')
+                [ "$_ups" -le "$_depth" ] && continue
+                sed -E 's#^(\.\./)+##' <<<"$_p" | cut -d/ -f1
+              done < <(grep -oE 'path[[:space:]]*=[[:space:]]*"[^"]+"' "$_m" 2>/dev/null | sed -E 's/.*"([^"]+)"/\1/')
+            done < <(find "$CO_PATH" -name Cargo.toml -not -path '*/target/*') | sort -u
+          )
+          for _n in $_names; do
+            [ -n "$_n" ] || continue
+            [ "$_n" = "$CO_PATH" ] && continue
+            [ -d "$_n" ] && continue
+            _repo=$(awk -v n="$_n" '$1 == n { print $2; exit }' "$_map")
+            if [ -z "$_repo" ]; then echo "::warning::path-dep '$_n' not in workspace-repos.map - not cloned"; continue; fi
+            git clone --depth 1 "$(url_for "$_repo")" "$_n" && echo "cloned sibling $_repo -> $_n"
+          done
+      # Cache the VERDICT keyed on every source + manifest + lockfile; `nightly` writes a key
+      # nothing restores, which is how it stays cold.
+      - id: verdict
+        uses: actions/cache@v6
+        with:
+          path: ${{ inputs.working-directory }}/.loom-verdict-${{ matrix.pkg.package }}
+          key: loom-${{ matrix.pkg.package }}-${{ inputs.tier == 'nightly' && github.run_id || hashFiles(format('{0}/**/Cargo.lock', inputs.working-directory), format('{0}/**/Cargo.toml', inputs.working-directory), format('{0}/**/*.rs', inputs.working-directory)) }}
+
+      - name: "loom models of ${{ matrix.pkg.package }} (by name, none may be skipped)"
+        if: ${{ steps.verdict.outputs.cache-hit != 'true' }}
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          FILTERS: ${{ toJSON(matrix.pkg.filters) }}
+        run: |
+          set -uo pipefail
+          failed=0
+          while IFS= read -r filter; do
+            echo "::group::loom ${{ matrix.pkg.package }} $filter"
+            if ! cargo test -p "${{ matrix.pkg.package }}" --lib --release "$filter" 2>&1 | tee loom.log; then
+              echo "::error::loom model $filter of ${{ matrix.pkg.package }} FAILED"
+              failed=$((failed+1))
+            elif ! grep -Eq '^running [1-9][0-9]* tests?' loom.log; then
+              echo "::error::loom filter '$filter' of ${{ matrix.pkg.package }} matched no test - the model did not run"
+              failed=$((failed+1))
+            fi
+            echo "::endgroup::"
+          done < <(echo "$FILTERS" | jq -r '.[]')
+          if [ "$failed" -eq 0 ]; then
+            echo "verified ${{ matrix.pkg.package }}" > ".loom-verdict-${{ matrix.pkg.package }}"
+          elif [ "${{ inputs.loom-enforce }}" = "true" ]; then
+            exit 1
+          fi
+
+      - name: "cached verdict"
+        if: ${{ steps.verdict.outputs.cache-hit == 'true' }}
+        run: echo "sources unchanged since the last verified run - replaying cached verdict"
 
   geiger:
     name: "unsafe surface (geiger)"
