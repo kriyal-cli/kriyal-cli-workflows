@@ -8,6 +8,7 @@ kriyal-client
 kriyal-compliance
 kriyal-cts
 kriyal-datasets
+kriyal-dgir
 kriyal-marketplace
 kriyal-mcp
 kriyal-OSSupport
