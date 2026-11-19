@@ -1,6 +1,8 @@
 IndicNode-Kriyal
 indicnode-resources
 indicnode-restricted
+kriyal-anveshak
+kriyal-authenticator
 kriyal-base
 kriyal-cli
 kriyal-cli-private
@@ -11,6 +13,7 @@ kriyal-datasets
 kriyal-dgir
 kriyal-marketplace
 kriyal-mcp
+kriyal-multimedia
 kriyal-OSSupport
 kriyal-sdk
 kriyal-server
